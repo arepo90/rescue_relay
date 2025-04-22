@@ -1,3 +1,8 @@
+/*
+    Publisher test program
+    Robotec 2025
+*/
+
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"

@@ -23,6 +23,7 @@ find_package(portaudio CONFIG REQUIRED)
 find_package(Opus CONFIG REQUIRED)
 list(APPEND CMAKE_MODULE_PATH "C:/vcpkg/installed/x64-windows/share/ffmpeg")
 find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale)
+find_package(ZLIB REQUIRED)
 add_definitions(-DHAVE_OPENCV_CUDA=1)
 find_package(OpenCV REQUIRED COMPONENTS 
     core 
@@ -48,6 +49,7 @@ if(WIN32)
         ${AVUTIL_LIB}
         ${SWSCALE_LIB}
     )
+    target_link_libraries(subscriber ZLIB::ZLIB ${OpenCV_LIBS})
 elseif(UNIX)
     add_executable(relay src/ros2_relay_linux.cpp)
     target_link_libraries(relay Opus::opus portaudio pthread ${OpenCV_LIBS})

@@ -1,29 +1,62 @@
-#include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float32_multi_array.hpp"
-#include "sensor_msgs/msg/compressed_image.hpp"
+/*
+    Tests n stuff
+    Not actual subscriber implementation
+*/
 
-#define TOPIC_NAME "rescue_topic"
+#include <zlib.h>
+#include <iostream>
+#include <opencv2/opencv.hpp>
+#include <chrono>
+using namespace std;
+using namespace chrono;
+using namespace cv;
 
-class SubscriberNode : public rclcpp::Node{
-public:
-    SubscriberNode() : Node("subscriber"){
-        std::cout << "[i] Starting subscriber...\n";
-        subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(TOPIC_NAME, 10, [this](std_msgs::msg::Float32MultiArray::UniquePtr msg){
-            std::cout << "msg size: " << msg->data.size() << " first val: " << msg->data[0] << "\n";
-        });
-        std::cout << "[i] Setup done\n";
+int main(){
+    VideoCapture cap(0);
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
+    if(!cap.isOpened()){
+        cout << "cam not open\n";
+        return -1;
     }
-    ~SubscriberNode(){
-        std::cout << "[i] Bye\n";
+    Mat frame;
+    cap >> frame;
+    if(frame.empty()){
+        std::cout << "Empty frame\n";
+        return -1;;
     }
-private:
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr subscription;
-};
+    vector<uchar> raw;
+    if(!frame.isContinuous()){
+        cv::Mat continuous = frame.clone();
+        raw = std::vector<uchar>(continuous.data, continuous.data + continuous.total() * continuous.elemSize());
+    }
+    else 
+        raw = std::vector<uchar>(frame.data, frame.data + frame.total() * frame.elemSize());
 
-int main(int argc, char * argv[]){
-    std::cout << "[i] Hi\n";
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<SubscriberNode>());
-    rclcpp::shutdown();
+    uLong dest_len = compressBound(raw.size());
+    vector<uchar> compressed(dest_len);
+
+    auto start = high_resolution_clock::now();
+    int result = compress(compressed.data(), &dest_len, raw.data(), raw.size());
+    auto end = high_resolution_clock::now();
+
+    if(result == Z_OK){
+        compressed.resize(dest_len);
+        cout << "raw size: " << raw.size() << " compressed size: " << compressed.size() << " ratio: " << double(raw.size())/double(compressed.size()) << " time: " << duration_cast<milliseconds>(end-start).count() << "\n"; 
+    } 
+    else{
+        cout << "compression error\n";
+        return -1;
+    }
+
+    raw.clear();
+    vector<uchar> compressed2;
+    start = high_resolution_clock::now();
+    imencode(".jpg", frame, compressed2, {cv::IMWRITE_JPEG_QUALITY, 50});
+    end = high_resolution_clock::now();
+    cout << "raw size: " << raw.size() << " compressed size: " << compressed2.size() << " ratio: " << double(raw.size())/double(compressed2.size()) << " time: " << duration_cast<milliseconds>(end-start).count() << "\n"; 
+    Mat final = imdecode(compressed2, IMREAD_COLOR);
+    cv::cvtColor(final, final, cv::COLOR_BGR2RGB);
+    imshow("??", final);
     return 0;
 }

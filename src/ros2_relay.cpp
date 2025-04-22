@@ -24,21 +24,21 @@
 #include <cstdlib>
 #include <stdlib.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/core/cuda.hpp>
-#include <opencv2/cudaimgproc.hpp>
 #include <opus/opus.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #pragma comment(lib, "ws2_32.lib")
 
+// --- Initial settings ---
 #define TOPIC_NAME "rescue_topic"
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 48000     // 48 kHz
 #define AUDIO_FRAME_SIZE 2880       // 2880 bytes = 120 ms
-#define VIDEO_WIDTH 1280
-#define VIDEO_HEIGHT 720
-#define VIDEO_FPS 30
+#define VIDEO_WIDTH 1920
+#define VIDEO_HEIGHT 1080
+#define MAX_UDP_PACKET_SIZE 65507   // 65507 bytes ~= 65.5 kB
+#define FRAGMENTATION_FLAG 0x8000   // RTP header flag
 
 std::vector<int> cam_ports = {0};
 
@@ -63,11 +63,11 @@ struct RTPHeader{
     uint16_t x:1;
     uint16_t p:1;
     uint16_t version:2;
-    uint16_t pt:7;
-    uint16_t m:1;
+    uint16_t pt:1;
+    uint16_t m;
     uint16_t seq;
-    uint32_t timestamp;
-    uint32_t ssrc;
+    uint16_t timestamp;
+    uint16_t ssrc;
 };
 
 enum class PayloadType : uint8_t {
@@ -91,7 +91,7 @@ std::vector<int> scanWebcams(int num_ports = 5){
 class RTPStreamHandler{    
 public:
     RTPStreamHandler(int port, std::string address, PayloadType type){
-        // ---- Stream info ---
+        // --- Stream info ---
         stream = new Stream;
         stream->ssrc = 0;
         stream->seq_num = 0 & 0xFFFF;
@@ -100,7 +100,7 @@ public:
         stream->port = port;
 
         // --- UDP Socket init ---
-        // --- send ---
+        // -- send --
         send_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         send_socket_address.sin_family = AF_INET;
         send_socket_address.sin_port = htons(port);
@@ -126,32 +126,49 @@ public:
         delete this;
     }
     template <typename T> void sendPacket(std::vector<T> data){
-        // --- RTP header info ---
-        RTPHeader header;
-        header.version = 2;
-        header.p = 0;
-        header.x = 0;
-        header.cc = 0;
-        header.m = 1;
-        header.pt = static_cast<uint8_t>(stream->payload_type);
-        header.seq = stream->seq_num++;
-        header.timestamp = stream->timestamp;
-        header.ssrc = stream->ssrc;
-        stream->timestamp += 100; // fix this shit
-        // --- Prepare packet for send ---
-        std::vector<char> packet((data.size() * sizeof(T)) + sizeof(RTPHeader));
-        std::memcpy(packet.data(), &header, sizeof(RTPHeader));
-        std::memcpy(packet.data() + sizeof(RTPHeader), data.data(), data.size() * sizeof(T));
-        // --- Simulated network degradation (lowkey trash implementation but idc) ---
-        /*
-        this_thread::sleep_for(std::chrono::milliseconds(rand() % 150));    // ~100ms latency
-        if(rand() % 10 == 0) return;    // ~10% packet loss
-        */
-        if(sendto(send_socket, packet.data(), packet.size(), 0, (struct sockaddr*)&send_socket_address, socket_address_size) == SOCKET_ERROR)
-            std::cout << "[w] Packet send failed. Winsock error: " << WSAGetLastError() << "\n";
+        // --- Initial settings ---
+        int max_size = MAX_UDP_PACKET_SIZE - sizeof(RTPHeader);
+        int num_fragments = ((data.size()*sizeof(T)) + max_size - 1) / max_size;
+        // -- (Pseudo)random ssrc --
+        thread_local uint16_t ssrc = 1;
+        ssrc ^= ssrc << 7;
+        ssrc ^= ssrc >> 9;
+        ssrc ^= ssrc << 8;
+
+        // --- Fragment setup ---
+        for(int i = 0; i < num_fragments; i++){
+            // -- RTP header info --
+            RTPHeader header;
+            header.version = 2;
+            header.p = 0;
+            header.x = 0;
+            header.cc = 0;
+            header.m = (uint16_t)num_fragments;
+            header.pt = 0;
+            header.timestamp = 0;
+            header.ssrc = ssrc;
+            header.seq = (uint16_t)i;
+            if(num_fragments > 1)
+                header.seq |= FRAGMENTATION_FLAG;
+            // -- Merge header + packet --
+            int current_size = (max_size < ((data.size()*sizeof(T)) - (i*max_size)) ? max_size : (data.size()*sizeof(T)) - (i*max_size));
+            std::vector<char> packet(current_size + sizeof(RTPHeader));
+            std::memcpy(packet.data(), &header, sizeof(RTPHeader));
+            std::memcpy(packet.data() + sizeof(RTPHeader), data.data() + (i*max_size), current_size);
+
+            // --- Simulated network degradation (lowkey trash implementation, sorry) ---
+            /*
+            this_thread::sleep_for(std::chrono::milliseconds(rand() % 150));    // ~100ms latency
+            if(rand() % 10 == 0) return;    // ~10% packet loss
+            */
+
+            if(sendto(send_socket, (const char*)packet.data(), packet.size(), 0, (struct sockaddr*)&send_socket_address, socket_address_size) == SOCKET_ERROR){
+                std::cout << "[w] Packet send failed on fragment " << i << ". Winsock error: " << WSAGetLastError() << "\n";
+            }
+        } 
     }
     std::vector<int> recvPacket(){
-        // --- Receive packet ---
+        // --- Receive (non-fragmented) packet ---
         std::vector<char> packet(4096);
         int bytes_received = recvfrom(recv_socket, packet.data(), packet.size(), 0, (struct sockaddr*)&recv_socket_address, &socket_address_size);
         if(bytes_received == SOCKET_ERROR){
@@ -165,7 +182,7 @@ public:
             return {};
         }
 
-        // --- Parse header and relevant data ---
+        // --- Parse header and data ---
         RTPHeader* header = new RTPHeader;
         std::memcpy(header, packet.data(), sizeof(RTPHeader));
         std::vector<int> data((bytes_received - sizeof(RTPHeader)) / sizeof(int));
@@ -264,6 +281,7 @@ public:
                 audio_socket.is_active.store((bool)data[1]);
             }
         });
+        // -- video --
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].send_thread = std::thread([i, this](){
                 cv::VideoCapture cap(cam_ports[i]);
@@ -283,7 +301,7 @@ public:
                             std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << "n";
                             break;
                         }
-                        cv::imencode(".jpg", frame, compressed_data, {cv::IMWRITE_JPEG_QUALITY, 50});
+                        cv::imencode(".jpg", frame, compressed_data, {cv::IMWRITE_JPEG_QUALITY, 40});
                         video_sockets[i].target_socket->sendPacket(compressed_data);
                     }
                     else 
@@ -305,7 +323,6 @@ public:
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(ros2_mutex);
             std::memcpy(&base_packet, ros2_data.data(), sizeof(BasePacket));
-            std::cout << "received first: " << base_packet.body_x << "\n";
         });
         std::cout << "[i] Setup done\n";
     }
@@ -332,15 +349,14 @@ public:
             audio_socket.recv_thread.join();
         if(audio_socket.send_thread.joinable())
             audio_socket.send_thread.join();
+        std::cout << "[i] Audio channel closed\n";
         // -- base --
         base_socket.target_socket->destroy();
-        std::cout << "destroyed base socket\n";
         if(base_socket.send_thread.joinable()) 
             base_socket.send_thread.join();
-        std::cout << "joined base send thread\n";
         if(base_socket.recv_thread.joinable()) 
             base_socket.recv_thread.join();
-        std::cout << "joined base threads\n";
+        std::cout << "[i] Base channel closed\n";
         // -- video --
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].target_socket->destroy();
@@ -349,7 +365,7 @@ public:
             if(video_sockets[i].recv_thread.joinable()) 
                 video_sockets[i].recv_thread.join();
         }
-
+        std::cout << "[i] Video channels closed\n";
         WSACleanup();
         std::cout << "[i] Bye\n";
     }
@@ -375,7 +391,6 @@ private:
         if(encoded_size > 0){
             std::vector<unsigned char> packet(encoded_size);
             std::memcpy(packet.data(), encoded_data, encoded_size);
-            std::cout << "sending audio\n";
             audio_socket.target_socket->sendPacket(packet);
         }
         else 
@@ -389,7 +404,7 @@ private:
         std::atomic<bool> is_send_running;
         std::atomic<bool> is_recv_running;
         std::atomic<bool> is_active;
-        // --- Thingamajig to transfer std::thread ownership ---
+        // --- Unecessarily complicated implementation to transfer std::thread ownership ---
         SocketStruct() : target_socket(nullptr){}
         SocketStruct(SocketStruct&& other) noexcept
             : recv_thread(std::move(other.recv_thread)),
