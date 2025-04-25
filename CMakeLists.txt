@@ -19,6 +19,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(portaudio CONFIG REQUIRED)
 find_package(Opus CONFIG REQUIRED)
 list(APPEND CMAKE_MODULE_PATH "C:/vcpkg/installed/x64-windows/share/ffmpeg")
@@ -32,12 +33,13 @@ find_package(OpenCV REQUIRED COMPONENTS
     cudaimgproc
     cudafeatures2d
 )
+find_package(tf2 REQUIRED)
 
 add_executable(publisher src/ros2_publisher.cpp)
 target_link_libraries(publisher ${OpenCV_LIBS})
-ament_target_dependencies(publisher rclcpp std_msgs sensor_msgs)
+ament_target_dependencies(publisher rclcpp std_msgs sensor_msgs nav_msgs tf2)
 add_executable(subscriber src/ros2_subscriber.cpp)
-ament_target_dependencies(subscriber rclcpp std_msgs sensor_msgs)
+ament_target_dependencies(subscriber rclcpp std_msgs sensor_msgs nav_msgs tf2)
 if(WIN32)
     add_executable(relay src/ros2_relay.cpp)
     target_link_libraries(relay 
@@ -54,7 +56,7 @@ elseif(UNIX)
     add_executable(relay src/ros2_relay_linux.cpp)
     target_link_libraries(relay Opus::opus portaudio pthread ${OpenCV_LIBS})
 endif()
-ament_target_dependencies(relay rclcpp std_msgs sensor_msgs)
+ament_target_dependencies(relay rclcpp std_msgs sensor_msgs nav_msgs tf2)
 
 install(TARGETS publisher DESTINATION lib/${PROJECT_NAME})
 install(TARGETS subscriber DESTINATION lib/${PROJECT_NAME})

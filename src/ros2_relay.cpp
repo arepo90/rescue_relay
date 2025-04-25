@@ -3,9 +3,6 @@
     Robotec 2025
 */
 
-#ifndef _WIN32
-    #error "Unsupported OS: Windows required"
-#endif
 #ifndef NOMINMAX
     #define NOMINMAX
 #endif
@@ -23,15 +20,26 @@
 #include <cstdint>
 #include <cstdlib>
 #include <stdlib.h>
+#include <cmath>
+#include <regex>
 #include <opencv2/opencv.hpp>
 #include <opus/opus.h>
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float32_multi_array.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
+#include "tf2/LinearMath/Quaternion.h"
+#include "tf2/LinearMath/Matrix3x3.h"
 #pragma comment(lib, "ws2_32.lib")
 
 // --- Initial settings ---
-#define TOPIC_NAME "rescue_topic"
+#define M_PI 3.14159265358979323846
+#define ODOMETRY_TOPIC "odom"
+#define JOINTS_TOPIC "joint_states"
+#define SENSORS_TOPIC "idk"
+#define MOTORS_TOPIC "motors_info"
 #define SERVER_IP "127.0.0.1"
+#define TRACK_WIDTH 0.47            // 47 cm
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 48000     // 48 kHz
 #define AUDIO_FRAME_SIZE 2880       // 2880 bytes = 120 ms
@@ -54,8 +62,10 @@ struct BasePacket{
     float art_4 = 0;
     float track_l = 0;
     float track_r = 0;
-    float armtrack_l = 0;
-    float armtrack_r = 0;
+    float magnetometer_x = 0;
+    float magnetometer_y = 0;
+    float magnetometer_z = 0;
+    float gas_ppm = 0;
 };
 
 struct RTPHeader{
@@ -242,14 +252,53 @@ public:
         base_socket.send_thread = std::thread([this](){
             while(base_socket.is_send_running.load()){
                 // --- Mutex lock for thread-safe access ---
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                std::vector<float> data(sizeof(BasePacket) / sizeof(float));
+                std::vector<float> packet(sizeof(BasePacket) / sizeof(float)), orientation, angles, sensors, motors;
                 {
-                    std::lock_guard<std::mutex> lock(ros2_mutex);
-                    std::memcpy(data.data(), &base_packet, sizeof(BasePacket));
+                    std::lock_guard<std::mutex> lock(odometry_mutex);
+                    orientation = odometry_data;
                 }
-                data.insert(data.begin(), (float)cam_ports.size());
-                base_socket.target_socket->sendPacket(data);
+                {
+                    std::lock_guard<std::mutex> lock(joints_mutex);
+                    angles = joints_data;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(sensors_mutex);
+                    sensors = sensors_data;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(motors_mutex);
+                    motors = motors_data;
+                }
+                if(orientation.empty())
+                    orientation = {0, 0, 0, 0, 0};
+                if(angles.empty())
+                    angles = {0, 0, 0, 0};
+                if(sensors.empty())
+                    sensors = {0, 0, 0, 0};
+                if(motors.empty())
+                    motors = {0, 0};
+
+                BasePacket base_packet = {
+                    orientation[0],
+                    orientation[1],
+                    orientation[2],
+                    0.0,
+                    0.0,
+                    angles[0],
+                    angles[1],
+                    angles[2],
+                    angles[3],
+                    motors[0],
+                    motors[1],
+                    sensors[0],
+                    sensors[1],
+                    sensors[2],
+                    sensors[3]
+                };
+                std::memcpy(packet.data(), &base_packet, sizeof(BasePacket));
+                packet.insert(packet.begin(), static_cast<float>(cam_ports.size()));
+                base_socket.target_socket->sendPacket(packet);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
         });
         base_socket.recv_thread = std::thread([this](){
@@ -317,12 +366,64 @@ public:
                 }
             });
         }
-        // -- ros2 --
-        ros2_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(TOPIC_NAME, 10, [this](const std_msgs::msg::Float32MultiArray::SharedPtr msg){
-            ros2_data = msg->data;
+        // -- ros2 topics --
+        odometry_subscription = this->create_subscription<nav_msgs::msg::Odometry>(ODOMETRY_TOPIC, 10, [this](const nav_msgs::msg::Odometry::SharedPtr msg){
+            const auto& q = msg->pose.pose.orientation;
+            double roll, pitch, yaw, track_l, track_r, linear_x = msg->twist.twist.linear.x, angular_z = msg->twist.twist.angular.z;
+            std::vector<float> orientation;
+            tf2::Quaternion quaternion(q.x, q.y, q.z, q.w);
+            tf2::Matrix3x3 mat(quaternion);
+            mat.getRPY(roll, pitch, yaw);    
+            track_l = linear_x - (angular_z * TRACK_WIDTH/2.0);
+            track_r = linear_x + (angular_z * TRACK_WIDTH/2.0);
+            orientation.push_back(static_cast<float>(roll * 180.0/M_PI));
+            orientation.push_back(static_cast<float>(pitch * 180.0/M_PI));
+            orientation.push_back(static_cast<float>(yaw * 180.0/M_PI));
+            orientation.push_back(static_cast<float>(track_l));
+            orientation.push_back(static_cast<float>(track_r));
+
             // --- Mutex locks for thread-safe updates ---
-            std::lock_guard<std::mutex> lock(ros2_mutex);
-            std::memcpy(&base_packet, ros2_data.data(), sizeof(BasePacket));
+            std::lock_guard<std::mutex> lock(odometry_mutex);
+            odometry_data = orientation;
+        });
+        joints_subscription = this->create_subscription<sensor_msgs::msg::JointState>(JOINTS_TOPIC, 10, [this](const sensor_msgs::msg::JointState::SharedPtr msg){
+            std::vector<float> angles;
+            for(double pos_rad : msg->position) {
+                angles.push_back(static_cast<float>(pos_rad * 180.0/M_PI));
+            }
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(joints_mutex);
+            joints_data = angles;
+        });
+        /*
+        sensors_subscription = this->create_subscription<sensor_msgs::msg::>(SENSORS_TOPIC, 10, [this](const sensor_msgs::msg::::SharedPtr msg){
+            std::vector<float> sensors;
+
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(sensors_mutex);
+            sensors_data = sensors;
+        });
+        */
+        motors_subscription = this->create_subscription<std_msgs::msg::String>(MOTORS_TOPIC, 10, [this](const std_msgs::msg::String::SharedPtr msg){
+            std::vector<float> motors;
+            std::string data = msg->data;
+            data.erase(0, data.find_first_not_of(" \t\n\r\f\v"));
+            data.erase(data.find_last_not_of(" \t\n\r\f\v") + 1);
+            std::regex pattern(R"(\[(\d+)\s*ms\]\s*M1:\s*([-\d.]+)\s*m/s,\s*([-\d.]+)\s*RPM,\s*([FR])\s*\|\s*M2:\s*([-\d.]+)\s*m/s,\s*([-\d.]+)\s*RPM,\s*([FR]))");
+            std::smatch match;
+            if(std::regex_match(data, match, pattern)){
+                double m1_speed = std::stod(match[2]);
+                char m1_dir = match[4].str()[0];
+                double m2_speed = std::stod(match[5]);
+                char m2_dir = match[7].str()[0];
+                motors = {(m1_dir == 'F' ? 1.0f : -1.0f) * (float)m1_speed, (m2_dir == 'F' ? 1.0f : -1.0f) * (float)m2_speed};
+            } 
+            else
+                std::cout << "[w] Motor topic regex did not match\n";
+            
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(motors_mutex);
+            motors_data = motors;
         });
         std::cout << "[i] Setup done\n";
     }
@@ -421,12 +522,23 @@ private:
         SocketStruct(const SocketStruct&) = delete;
         SocketStruct& operator=(const SocketStruct&) = delete;
     };
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr ros2_subscription;
-    BasePacket base_packet;
-    std::vector<float> ros2_data;
+
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odometry_subscription;
+    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joints_subscription;
+    //rclcpp::Subscription<sensor_msgs::msg::>::SharedPtr sensors_subscription;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr motors_subscription;
+
+    std::vector<float> odometry_data;
+    std::vector<float> joints_data;
+    std::vector<float> sensors_data;
+    std::vector<float> motors_data;
     std::vector<int> gui_data;
-    std::mutex ros2_mutex;
+    std::mutex odometry_mutex;
+    std::mutex joints_mutex;
+    std::mutex sensors_mutex;
+    std::mutex motors_mutex;
     std::mutex gui_mutex;
+
     PaStream* stream;
     PaError err;
     OpusEncoder* opus_encoder;
@@ -437,7 +549,7 @@ private:
 };
 
 int main(int argc, char** argv){
-    std::cout << "[i] Hi\n";
+    std::cout << "[i] Hi Windows\n";
     //cam_ports = scanWebcams();
     // --- RelayNode handles everything ---
     rclcpp::init(argc, argv);
