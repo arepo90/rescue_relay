@@ -4,54 +4,131 @@
 */
 
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
-#include "sensor_msgs/msg/compressed_image.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include <random>
+#include <cmath>
 
-#define TOPIC_NAME "rescue_topic"
+#define IMU_TOPIC "imu_data"
+#define ENCODER_TOPIC "encoder_position"
+#define GAS_TOPIC "mq2_gas"
+#define TRACK_TOPIC "track_velocity"
+#define THERMAL_TOPIC "thermal_image" 
+#define SENSOR_TOPIC "sensor_topic"
 
-struct BasePacket{
-    float body_x = 0;
-    float body_y = 0;
-    float body_z = 0;
-    float arm_l = 0;
-    float arm_r = 0;
-    float art_1 = 0;
-    float art_2 = 0;
-    float art_3 = 0;
-    float art_4 = 0;
-    float track_l = 0;
-    float track_r = 0;
-    float armtrack_l = 0;
-    float armtrack_r = 0;
-};
+#define M_PI 3.14159265358979323846
 
-class PublisherNode : public rclcpp::Node{
+class TestPublisher : public rclcpp::Node{
 public:
-    PublisherNode() : Node("publisher"){
-        std::cout << "[i] Starting publisher...\n";
-        float_publisher = this->create_publisher<std_msgs::msg::Float32MultiArray>(TOPIC_NAME, 10);
-        timer = this->create_wall_timer(std::chrono::milliseconds(1000), [this](){
-            std_msgs::msg::Float32MultiArray message = std_msgs::msg::Float32MultiArray();
-            message.data = { packet.body_x++, packet.body_y, packet.body_z, packet.arm_l, packet.arm_r, packet.art_1, packet.art_2, packet.art_3, packet.art_4, packet.track_l, packet.track_r, packet.armtrack_l, packet.armtrack_r };
-            std::cout <<  "[i] Publishing... " << packet.body_x << "\n";
-            float_publisher->publish(message);
-        });
-        std::cout << "[i] Setup done\n";
+    TestPublisher() : Node("test_publisher"){
+        gas_publisher_ = this->create_publisher<std_msgs::msg::Float32>(GAS_TOPIC, 10);
+        imu_publisher_ = this->create_publisher<sensor_msgs::msg::Imu>(IMU_TOPIC, 10);
+        thermal_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(THERMAL_TOPIC, 10);
+        track_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(TRACK_TOPIC, 10);
+        encoder_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(ENCODER_TOPIC, 10);
+        sensor_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(SENSOR_TOPIC, 10);
+
+        timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(250),
+            std::bind(&TestPublisher::publish_messages, this)
+        );
+        std::cout << "setup done\n";
     }
-    ~PublisherNode(){
-        std::cout << "[i] Bye\n";
-    }
+
 private:
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr float_publisher;
-    rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr img_publisher;
-    rclcpp::TimerBase::SharedPtr timer;
-    BasePacket packet;
+    bool inc = true;
+    void publish_messages(){
+        static float gas_value = 0;
+        std_msgs::msg::Float32 gas_msg;
+        gas_msg.data = gas_value;
+        gas_publisher_->publish(gas_msg);
+        gas_value += 5;
+        if(gas_value > 100) 
+            gas_value = 0;
+
+        static float imu_angle = -45.0;
+        sensor_msgs::msg::Imu imu_msg;
+        float roll = imu_angle * M_PI / 180.0;
+        float pitch = imu_angle * M_PI / 180.0;
+        float yaw = imu_angle * M_PI / 180.0;
+
+        double cy = cos(yaw * 0.5);
+        double sy = sin(yaw * 0.5);
+        double cp = cos(pitch * 0.5);
+        double sp = sin(pitch * 0.5);
+        double cr = cos(roll * 0.5);
+        double sr = sin(roll * 0.5);
+
+        imu_msg.orientation.w = cr * cp * cy + sr * sp * sy;
+        imu_msg.orientation.x = sr * cp * cy - cr * sp * sy;
+        imu_msg.orientation.y = cr * sp * cy + sr * cp * sy;
+        imu_msg.orientation.z = cr * cp * sy - sr * sp * cy;
+
+        imu_publisher_->publish(imu_msg);
+
+        //std::cout << "imu euler: " << imu_angle << "\n";
+        //std::cout << "imu quat: " << imu_msg.orientation.x << " " << imu_msg.orientation.y << " " << imu_msg.orientation.z << " " << imu_msg.orientation.w << "\n";
+
+        if(inc) imu_angle += 15.0;
+        else imu_angle -= 15.0;
+        if(imu_angle > 45.0)
+            inc = false;
+        else if(imu_angle < -45.0)
+            inc = true;
+
+        // Thermal topic: 64 length vector with random numbers between 20 to 40
+        std_msgs::msg::Float32MultiArray thermal_msg;
+        thermal_msg.data.resize(64);
+        for(auto &value : thermal_msg.data){
+            value = random_float(20.0, 40.0);
+        }
+        thermal_publisher_->publish(thermal_msg);
+
+        // Track topic: 2 numbers between -1 and 1 increasing by 0.25
+        static float track_value = -1.0;
+        std_msgs::msg::Float32MultiArray track_msg;
+        track_msg.data = {track_value, track_value};
+        track_publisher_->publish(track_msg);
+        track_value += 0.25;
+        if(track_value > 1.0) track_value = -1.0;
+
+        // Encoder topic: 2 numbers between 0 to 2*pi increasing by pi/4
+        static float encoder_value = 0.0;
+        std_msgs::msg::Float32MultiArray encoder_msg;
+        encoder_msg.data = {encoder_value, encoder_value};
+        encoder_publisher_->publish(encoder_msg);
+        encoder_value += 30.0;
+        if(encoder_value > 360.0)
+            encoder_value = 0.0;
+
+        // Sensor topic: 3 random numbers between -1 and 1
+        std_msgs::msg::Float32MultiArray sensor_msg;
+        sensor_msg.data = {random_float(-1.0, 1.0), random_float(-1.0, 1.0), random_float(-1.0, 1.0)};
+        sensor_publisher_->publish(sensor_msg);
+
+    }
+
+    float random_float(float min, float max){
+        std::uniform_real_distribution<float> dist(min, max);
+        return dist(rng_);
+    }
+
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gas_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr track_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr encoder_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_publisher_;
+    rclcpp::TimerBase::SharedPtr timer_;
+
+    std::default_random_engine rng_;
 };
 
 int main(int argc, char *argv[]){
-    std::cout << "[i] Hi\n";
+    std::cout << "hi\n";
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<PublisherNode>());
+    rclcpp::spin(std::make_shared<TestPublisher>());
     rclcpp::shutdown();
     return 0;
 }
