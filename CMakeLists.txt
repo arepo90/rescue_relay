@@ -18,28 +18,20 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
 find_package(portaudio CONFIG REQUIRED)
 find_package(Opus CONFIG REQUIRED)
 list(APPEND CMAKE_MODULE_PATH "C:/vcpkg/installed/x64-windows/share/ffmpeg")
 find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale)
 find_package(ZLIB REQUIRED)
-add_definitions(-DHAVE_OPENCV_CUDA=1)
-find_package(OpenCV REQUIRED COMPONENTS 
-    core 
-    cudaarithm
-    cudafilters
-    cudaimgproc
-    cudafeatures2d
-)
-find_package(tf2 REQUIRED)
+find_package(OpenCV REQUIRED)
 
 add_executable(publisher src/ros2_publisher.cpp)
-target_link_libraries(publisher ${OpenCV_LIBS})
-ament_target_dependencies(publisher rclcpp std_msgs sensor_msgs nav_msgs tf2)
+ament_target_dependencies(publisher rclcpp std_msgs sensor_msgs geometry_msgs)
 add_executable(subscriber src/ros2_subscriber.cpp)
-ament_target_dependencies(subscriber rclcpp std_msgs sensor_msgs nav_msgs tf2)
+ament_target_dependencies(subscriber rclcpp std_msgs sensor_msgs geometry_msgs)
+
 if(WIN32)
     add_executable(relay src/ros2_relay.cpp)
     target_link_libraries(relay 
@@ -51,12 +43,20 @@ if(WIN32)
         ${AVUTIL_LIB}
         ${SWSCALE_LIB}
     )
-    target_link_libraries(subscriber ZLIB::ZLIB ${OpenCV_LIBS})
 elseif(UNIX)
     add_executable(relay src/ros2_relay_linux.cpp)
-    target_link_libraries(relay Opus::opus portaudio pthread ${OpenCV_LIBS})
+    target_link_libraries(relay
+        Opus::opus
+        portaudio
+        pthread
+        ${OpenCV_LIBS}
+        ${AVCODEC_LIBRARIES}
+        ${AVUTIL_LIBRARIES}
+        ${SWSCALE_LIBRARIES}
+    )
 endif()
-ament_target_dependencies(relay rclcpp std_msgs sensor_msgs nav_msgs tf2)
+
+ament_target_dependencies(relay rclcpp std_msgs sensor_msgs geometry_msgs)
 
 install(TARGETS publisher DESTINATION lib/${PROJECT_NAME})
 install(TARGETS subscriber DESTINATION lib/${PROJECT_NAME})

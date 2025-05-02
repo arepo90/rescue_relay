@@ -99,7 +99,7 @@ std::vector<int> scanWebcams(int num_ports = 5){
     return ports;
 }
 
-
+// non cross-compatible class
 class RTPStreamHandler {    
 public:
     RTPStreamHandler(int port, std::string address, PayloadType type) {
@@ -237,7 +237,6 @@ private:
     struct sockaddr_in recv_socket_address;
     socklen_t socket_address_size = sizeof(send_socket_address);
 };
-    
 
 class RelayNode : public rclcpp::Node{
 public:
