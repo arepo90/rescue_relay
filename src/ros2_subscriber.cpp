@@ -2,7 +2,7 @@
     Subscriber test program
     Robotec 2025
 
-    Actually this is the code for the publisher because..... reasons
+    Couldn't be bothered to write any of this, so thank deepseek
 */
 
 #include "rclcpp/rclcpp.hpp"
@@ -10,173 +10,161 @@
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
-#include <random>
-#include <cmath>
+
+#include <iostream>
+#include <vector>
+#include <sstream>
+#include <iomanip>
 
 #define IMU_TOPIC "imu_data"
 #define ENCODER_TOPIC "encoder_position"
 #define GAS_TOPIC "mq2_gas"
 #define TRACK_TOPIC "track_velocity"
-#define THERMAL_TOPIC "thermal_image" 
+#define THERMAL_TOPIC "thermal_image"
 #define SENSOR_TOPIC "sensor_topic"
 #define JOINT1_TOPIC "joint_base"
 #define JOINT2_TOPIC "joint_shouler"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
 
-#define M_PI 3.14159265358979323846
+// Use placeholders for std::bind (like _1)
+using namespace std::placeholders;
 
-class TestPublisher : public rclcpp::Node{
+class TestSubscriber : public rclcpp::Node {
 public:
-    TestPublisher() : Node("test_publisher"){
-        gas_publisher_ = this->create_publisher<std_msgs::msg::Float32>(GAS_TOPIC, 10);
-        imu_publisher_ = this->create_publisher<sensor_msgs::msg::Imu>(IMU_TOPIC, 10);
-        thermal_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(THERMAL_TOPIC, 10);
-        track_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(TRACK_TOPIC, 10);
-        encoder_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(ENCODER_TOPIC, 10);
-        sensor_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(SENSOR_TOPIC, 10);
-        joint1_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT1_TOPIC, 10);
-        joint2_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT2_TOPIC, 10);
-        joint3_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT3_TOPIC, 10);
-        joint4_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT4_TOPIC, 10);
+    TestSubscriber() : Node("test_subscriber") {
+        RCLCPP_INFO(this->get_logger(), "Test Subscriber Node Started. Listening...");
 
+        // Create subscriptions for each topic
+        gas_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            GAS_TOPIC, 10, std::bind(&TestSubscriber::gas_callback, this, _1));
 
-        timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(250),
-            std::bind(&TestPublisher::publish_messages, this)
-        );
-        std::cout << "setup done\n";
+        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
+            IMU_TOPIC, 10, std::bind(&TestSubscriber::imu_callback, this, _1));
+
+        thermal_sub_ = this->create_subscription<std_msgs::msg::Float32MultiArray>(
+            THERMAL_TOPIC, 10, std::bind(&TestSubscriber::thermal_callback, this, _1));
+
+        track_sub_ = this->create_subscription<geometry_msgs::msg::Vector3>(
+            TRACK_TOPIC, 10, std::bind(&TestSubscriber::track_callback, this, _1));
+
+        encoder_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            ENCODER_TOPIC, 10, std::bind(&TestSubscriber::encoder_callback, this, _1));
+
+        sensor_sub_ = this->create_subscription<std_msgs::msg::Float32MultiArray>(
+            SENSOR_TOPIC, 10, std::bind(&TestSubscriber::sensor_callback, this, _1));
+
+        joint1_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            JOINT1_TOPIC, 10, std::bind(&TestSubscriber::joint1_callback, this, _1));
+
+        joint2_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            JOINT2_TOPIC, 10, std::bind(&TestSubscriber::joint2_callback, this, _1));
+
+        joint3_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            JOINT3_TOPIC, 10, std::bind(&TestSubscriber::joint3_callback, this, _1));
+
+        joint4_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            JOINT4_TOPIC, 10, std::bind(&TestSubscriber::joint4_callback, this, _1));
     }
 
 private:
-    bool inc = true;
-    void publish_messages(){
-        static float gas_value = 0;
-        static float joint1_value = 0;
-        static float joint2_value = 0;
-        static float joint3_value = 0;
-        static float joint4_value = 0;
+    // --- Callback functions ---
+    void gas_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f", GAS_TOPIC, msg->data);
+    }
 
-        std_msgs::msg::Float32 gas_msg;
-        gas_msg.data = gas_value;
-        gas_publisher_->publish(gas_msg);
-        gas_value += 5;
-        if(gas_value > 100) 
-            gas_value = 0;
+    void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: Orientation(x=%.3f, y=%.3f, z=%.3f, w=%.3f)",
+                    IMU_TOPIC,
+                    msg->orientation.x,
+                    msg->orientation.y,
+                    msg->orientation.z,
+                    msg->orientation.w);
+        // Optionally print other IMU fields if needed (they are 0 in the publisher)
+        // RCLCPP_INFO(this->get_logger(), "  AngVel(x=%.3f, y=%.3f, z=%.3f), LinAcc(x=%.3f, y=%.3f, z=%.3f)",
+        //             msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z,
+        //             msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+    }
 
-        std_msgs::msg::Float32 joint1_msg;
-        joint1_msg.data = joint1_value;
-        joint1_publisher_->publish(joint1_msg);
-        joint1_value += 15;
-        if(joint1_value > 90) 
-            joint1_value = 0;
-        
-        std_msgs::msg::Float32 joint2_msg;
-        joint2_msg.data = joint2_value;
-        joint2_publisher_->publish(joint2_msg);
-        joint2_value += 15;
-        if(joint2_value > 90) 
-            joint2_value = 0;
-
-        std_msgs::msg::Float32 joint3_msg;
-        joint3_msg.data = joint3_value;
-        joint3_publisher_->publish(joint3_msg);
-        joint3_value += 15;
-        if(joint3_value > 90) 
-            joint3_value = 0;
-
-        std_msgs::msg::Float32 joint4_msg;
-        joint4_msg.data = joint4_value;
-        joint4_publisher_->publish(joint4_msg);
-        joint4_value += 15;
-        if(joint4_value > 90) 
-            joint4_value = 0;
-
-        static float imu_angle = -45.0;
-        sensor_msgs::msg::Imu imu_msg;
-        float roll = imu_angle * M_PI / 180.0;
-        float pitch = imu_angle * M_PI / 180.0;
-        float yaw = imu_angle * M_PI / 180.0;
-
-        double cy = cos(yaw * 0.5);
-        double sy = sin(yaw * 0.5);
-        double cp = cos(pitch * 0.5);
-        double sp = sin(pitch * 0.5);
-        double cr = cos(roll * 0.5);
-        double sr = sin(roll * 0.5);
-
-        imu_msg.orientation.w = cr * cp * cy + sr * sp * sy;
-        imu_msg.orientation.x = sr * cp * cy - cr * sp * sy;
-        imu_msg.orientation.y = cr * sp * cy + sr * cp * sy;
-        imu_msg.orientation.z = cr * cp * sy - sr * sp * cy;
-
-        imu_publisher_->publish(imu_msg);
-
-        //std::cout << "imu euler: " << imu_angle << "\n";
-        //std::cout << "imu quat: " << imu_msg.orientation.x << " " << imu_msg.orientation.y << " " << imu_msg.orientation.z << " " << imu_msg.orientation.w << "\n";
-
-        if(inc) imu_angle += 15.0;
-        else imu_angle -= 15.0;
-        if(imu_angle > 45.0)
-            inc = false;
-        else if(imu_angle < -45.0)
-            inc = true;
-
-        // Thermal topic: 64 length vector with random numbers between 20 to 40
-        std_msgs::msg::Float32MultiArray thermal_msg;
-        thermal_msg.data.resize(64);
-        for(auto &value : thermal_msg.data){
-            value = random_float(20.0, 40.0);
+    void thermal_callback(const std_msgs::msg::Float32MultiArray::SharedPtr msg) const {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(2); // Format floats nicely
+        ss << "[";
+        bool first = true;
+        for (const auto& val : msg->data) {
+            if (!first) {
+                ss << ", ";
+            }
+            ss << val;
+            first = false;
         }
-        thermal_publisher_->publish(thermal_msg);
-
-        // Track topic: 2 numbers between -1 and 1 increasing by 0.25
-        static float track_value = -1.0;
-        std_msgs::msg::Float32MultiArray track_msg;
-        track_msg.data = {track_value, track_value};
-        track_publisher_->publish(track_msg);
-        track_value += 0.25;
-        if(track_value > 1.0) track_value = -1.0;
-
-        // Encoder topic: 2 numbers between 0 to 2*pi increasing by pi/4
-        static float encoder_value = 0.0;
-        std_msgs::msg::Float32MultiArray encoder_msg;
-        encoder_msg.data = {encoder_value, encoder_value};
-        encoder_publisher_->publish(encoder_msg);
-        encoder_value += 30.0;
-        if(encoder_value > 360.0)
-            encoder_value = 0.0;
-
-        // Sensor topic: 3 random numbers between -1 and 1
-        std_msgs::msg::Float32MultiArray sensor_msg;
-        sensor_msg.data = {random_float(-1.0, 1.0), random_float(-1.0, 1.0), random_float(-1.0, 1.0)};
-        sensor_publisher_->publish(sensor_msg);
-
+        ss << "]";
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %zu elements %s",
+                    THERMAL_TOPIC, msg->data.size(), ss.str().c_str());
     }
 
-    float random_float(float min, float max){
-        std::uniform_real_distribution<float> dist(min, max);
-        return dist(rng_);
+    void track_callback(const geometry_msgs::msg::Vector3::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: x=%.2f, y=%.2f, z=%.2f",
+                    TRACK_TOPIC, msg->x, msg->y, msg->z);
     }
 
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gas_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr joint1_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr joint2_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr joint3_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr joint4_publisher_;
-    rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr track_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr encoder_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_publisher_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    std::default_random_engine rng_;
+    void encoder_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", ENCODER_TOPIC, msg->data);
+    }
+
+    void sensor_callback(const std_msgs::msg::Float32MultiArray::SharedPtr msg) const {
+         std::stringstream ss;
+        ss << std::fixed << std::setprecision(3); // Format floats nicely
+        ss << "[";
+        bool first = true;
+        for (const auto& val : msg->data) {
+            if (!first) {
+                ss << ", ";
+            }
+            ss << val;
+            first = false;
+        }
+        ss << "]";
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %zu elements %s",
+                    SENSOR_TOPIC, msg->data.size(), ss.str().c_str());
+    }
+
+    void joint1_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT1_TOPIC, msg->data);
+    }
+
+    void joint2_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT2_TOPIC, msg->data);
+    }
+
+    void joint3_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT3_TOPIC, msg->data);
+    }
+
+    void joint4_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
+        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT4_TOPIC, msg->data);
+    }
+
+
+    // --- Subscription Member Variables ---
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr gas_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr encoder_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint1_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint2_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint3_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint4_sub_;
 };
 
-int main(int argc, char *argv[]){
-    std::cout << "hi\n";
+int main(int argc, char* argv[]) {
+    std::cout << "Starting Test Subscriber Node...\n";
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<TestPublisher>());
+    // Create the node and spin it to keep it alive and processing callbacks
+    rclcpp::spin(std::make_shared<TestSubscriber>());
     rclcpp::shutdown();
+    std::cout << "Test Subscriber Node Shutdown.\n";
     return 0;
 }

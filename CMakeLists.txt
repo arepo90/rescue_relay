@@ -11,6 +11,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 if(WIN32)
+    message(STATUS "WIN32 DETECTED")
+
     set(Python3_ROOT_DIR "C:/Python38")
     set(PYTHON_EXECUTABLE "C:/Python38/python.exe")
     set(Python3_EXECUTABLE "C:/Python38/python.exe")
@@ -22,8 +24,26 @@ if(WIN32)
     list(APPEND CMAKE_MODULE_PATH "C:/vcpkg/installed/x64-windows/share/ffmpeg")
     find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale)
 elseif(UNIX)
+    message(STATUS "UNIX DETECTED")
+
     find_package(Threads REQUIRED)
-    find_package(FFmpeg REQUIRED COMPONENTS libavcodec libavformat libavutil libswscale)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(AVCODEC REQUIRED libavcodec)
+    pkg_check_modules(AVFORMAT REQUIRED libavformat)
+    pkg_check_modules(AVUTIL REQUIRED libavutil)
+    pkg_check_modules(SWSCALE REQUIRED libswscale)
+    foreach(component IN ITEMS AVCODEC AVFORMAT AVUTIL SWSCALE)
+        if(${component}_FOUND)
+            add_library(FFmpeg::${component} INTERFACE IMPORTED)
+            set_target_properties(FFmpeg::${component} PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${${component}_INCLUDE_DIRS}"
+                INTERFACE_LINK_LIBRARIES "${${component}_LINK_LIBRARIES}"
+            )
+        endif()
+    endforeach()
+    pkg_check_modules(PORTAUDIO REQUIRED portaudio-2.0)
+    pkg_check_modules(OPUS REQUIRED opus)
+    #find_package(FFmpeg REQUIRED COMPONENTS libavcodec libavformat libavutil libswscale)
 endif()
 
 find_package(ZLIB REQUIRED)
@@ -32,8 +52,6 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(portaudio REQUIRED)
-find_package(Opus REQUIRED)
 find_package(OpenCV REQUIRED)
 
 add_executable(publisher src/ros2_publisher.cpp)
@@ -56,23 +74,19 @@ if(WIN32)
 elseif(UNIX)
     add_executable(relay src/ros2_relay_linux.cpp)
     target_link_libraries(relay
-        Opus::opus
-        portaudio
-        ${CMAKE_THREAD_LIBS_INIT}
+        ${OPUS_LIBRARIES}
+        ${PORTAUDIO_LIBRARIES}
+        pthread
         ${OpenCV_LIBS}
-        ${FFmpeg_LIBRARIES}
+        ${AVCODEC_LIBRARIES}
+        ${AVUTIL_LIBRARIES}
+        ${SWSCALE_LIBRARIES}
     )
-#elseif(UNIX)
-#    add_executable(relay src/ros2_relay_linux.cpp)
-#    target_link_libraries(relay
-#        Opus::opus
-#        portaudio
-#        pthread
-#        ${OpenCV_LIBS}
-#        ${AVCODEC_LIBRARIES}
-#        ${AVUTIL_LIBRARIES}
-#        ${SWSCALE_LIBRARIES}
-#    )
+    target_include_directories(relay PRIVATE 
+        ${PORTAUDIO_INCLUDE_DIRS}
+        ${OPUS_INCLUDE_DIRS}
+    )
+
 endif()
 
 ament_target_dependencies(relay rclcpp std_msgs sensor_msgs geometry_msgs)
