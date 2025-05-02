@@ -1,6 +1,8 @@
 /*
     Relay program - Windows version
     Robotec 2025
+
+    ** may or may not be long-term stable **
 */
 
 #ifndef NOMINMAX

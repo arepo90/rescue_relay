@@ -1,15 +1,10 @@
 /*
     Relay program - Linux version
     Robotec 2025
+
+    ** may or may not work/be stable **
 */
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
 #include <portaudio.h>
 #include <iostream>
 #include <string>
@@ -20,16 +15,21 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
-#include <regex>
+#include <cstring>
 #include <atomic>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <opencv2/opencv.hpp>
 #include <opus/opus.h>
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/string.hpp"
-#include "nav_msgs/msg/odometry.hpp"
-#include "sensor_msgs/msg/joint_state.hpp"
-#include "tf2/LinearMath/Quaternion.h"
-#include "tf2/LinearMath/Matrix3x3.h"
+#include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/float32_multi_array.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "geometry_msgs/msg/vector3.hpp"
 
 // --- Initial settings ---
 #define M_PI 3.14159265358979323846
@@ -39,7 +39,10 @@
 #define TRACK_TOPIC "track_velocity"
 #define THERMAL_TOPIC "thermal_image" 
 #define SENSOR_TOPIC "sensor_topic"
-#define JOINTS_TOPIC "joints_topic"
+#define JOINT1_TOPIC "joint_base"
+#define JOINT2_TOPIC "joint_shouler"
+#define JOINT3_TOPIC "joint_elbow"
+#define JOINT4_TOPIC "joint_hand"
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
@@ -50,6 +53,7 @@
 #define FRAGMENTATION_FLAG 0x8000   // RTP header flag
 
 std::vector<int> cam_ports = {0};
+std::vector<int> mic_ports = {0};
 
 struct BasePacket{
     float body_x = 0;
@@ -87,22 +91,10 @@ enum class PayloadType : uint8_t {
     ROS2_ARRAY = 99
 };
 
-std::vector<int> scanWebcams(int num_ports = 5){
-    std::vector<int> ports;
-    for(int i = 0; i < num_ports; i++){
-        cv::VideoCapture cap(i);
-        if(cap.isOpened()){
-            ports.push_back(i);
-            cap.release();
-        }
-    }
-    return ports;
-}
-
-// non cross-compatible class
-class RTPStreamHandler {    
+// Linux-compatible RTPStreamHandler class
+class RTPStreamHandler{    
 public:
-    RTPStreamHandler(int port, std::string address, PayloadType type) {
+    RTPStreamHandler(int port, std::string address, PayloadType type){
         // --- Stream info ---
         stream = new Stream;
         stream->ssrc = 0;
@@ -114,6 +106,11 @@ public:
         // --- UDP Socket init ---
         // -- send --
         send_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (send_socket < 0) {
+            std::cout << "[e] Failed to create send socket: " << strerror(errno) << std::endl;
+            return;
+        }
+        
         memset(&send_socket_address, 0, sizeof(send_socket_address));
         send_socket_address.sin_family = AF_INET;
         send_socket_address.sin_port = htons(port);
@@ -121,6 +118,11 @@ public:
         
         // -- recv --  
         recv_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (recv_socket < 0) {
+            std::cout << "[e] Failed to create recv socket: " << strerror(errno) << std::endl;
+            return;
+        }
+        
         int recv_buff_size = 1024 * 1024;   // 1MB
         setsockopt(recv_socket, SOL_SOCKET, SO_RCVBUF, (char*)&recv_buff_size, sizeof(recv_buff_size));
         
@@ -130,33 +132,28 @@ public:
         recv_socket_address.sin_addr.s_addr = INADDR_ANY;
         
         if (bind(recv_socket, (struct sockaddr*)&recv_socket_address, socket_address_size) < 0) {
-            std::cerr << "[e] Failed to bind receive socket: " << strerror(errno) << std::endl;
-            close(recv_socket);
-            close(send_socket);
-            throw std::runtime_error("Socket bind failed");
+            std::cout << "[e] Failed to bind recv socket: " << strerror(errno) << std::endl;
+            return;
         }
 
         std::cout << "[i] Channel created, bound to ports (" << port << ", " << port + 1 << ")\n";
     }
     
-    ~RTPStreamHandler() {
+    ~RTPStreamHandler(){
         std::cout << "[i] Closing channel (" << stream->port << ", " << stream->port + 1 << ")\n";
         shutdown(recv_socket, SHUT_RDWR);
         close(send_socket);
         close(recv_socket);
-        delete stream;
     }
-    
-    void destroy() {
+
+    void destroy(){
         delete this;
     }
     
-    template <typename T>
-    void sendPacket(std::vector<T> data) {
+    template <typename T> void sendPacket(std::vector<T> data){
         // --- Initial settings ---
         int max_size = MAX_UDP_PACKET_SIZE - sizeof(RTPHeader);
         int num_fragments = ((data.size()*sizeof(T)) + max_size - 1) / max_size;
-        
         // -- (Pseudo)random ssrc --
         thread_local uint16_t ssrc = 1;
         ssrc ^= ssrc << 7;
@@ -164,7 +161,7 @@ public:
         ssrc ^= ssrc << 8;
 
         // --- Fragment setup ---
-        for(int i = 0; i < num_fragments; i++) {
+        for(int i = 0; i < num_fragments; i++){
             // -- RTP header info --
             RTPHeader header;
             header.version = 2;
@@ -178,63 +175,60 @@ public:
             header.seq = (uint16_t)i;
             if(num_fragments > 1)
                 header.seq |= FRAGMENTATION_FLAG;
-                
             // -- Merge header + packet --
             int current_size = (max_size < ((data.size()*sizeof(T)) - (i*max_size)) ? max_size : (data.size()*sizeof(T)) - (i*max_size));
             std::vector<char> packet(current_size + sizeof(RTPHeader));
             std::memcpy(packet.data(), &header, sizeof(RTPHeader));
-            std::memcpy(packet.data() + sizeof(RTPHeader), data.data() + (i*max_size/sizeof(T)), current_size);
+            std::memcpy(packet.data() + sizeof(RTPHeader), data.data() + (i*max_size), current_size);
 
             // --- Simulated network degradation (lowkey trash implementation, sorry) ---
             /*
-            std::this_thread::sleep_for(std::chrono::milliseconds(rand() % 150));    // ~100ms latency
+            this_thread::sleep_for(std::chrono::milliseconds(rand() % 150));    // ~100ms latency
             if(rand() % 10 == 0) return;    // ~10% packet loss
             */
 
-            if(sendto(send_socket, (const char*)packet.data(), packet.size(), 0, (struct sockaddr*)&send_socket_address, socket_address_size) < 0) {
+            if(sendto(send_socket, (const char*)packet.data(), packet.size(), 0, (struct sockaddr*)&send_socket_address, socket_address_size) < 0){
                 std::cout << "[w] Packet send failed on fragment " << i << ". Error: " << strerror(errno) << "\n";
             }
         } 
     }
     
-    std::vector<int> recvPacket() {
+    std::vector<int> recvPacket(){
         // --- Receive (non-fragmented) packet ---
         std::vector<char> packet(4096);
         int bytes_received = recvfrom(recv_socket, packet.data(), packet.size(), 0, (struct sockaddr*)&recv_socket_address, &socket_address_size);
-        
-        if(bytes_received < 0) {
+        if(bytes_received < 0){
             int error = errno;
-            if(error != EINTR) 
+            if(error != EAGAIN && error != EWOULDBLOCK) 
                 std::cout << "[e] Packet recv failed. Error: " << strerror(error) << "\n";
             return {};
         }
-        else if(bytes_received <= (int)sizeof(RTPHeader)) {
+        else if(bytes_received <= (int)sizeof(RTPHeader)){
             std::cout << "[w] Empty packet received\n";
             return {};
         }
 
         // --- Parse header and data ---
-        RTPHeader header;
-        std::memcpy(&header, packet.data(), sizeof(RTPHeader));
+        RTPHeader* header = new RTPHeader;
+        std::memcpy(header, packet.data(), sizeof(RTPHeader));
         std::vector<int> data((bytes_received - sizeof(RTPHeader)) / sizeof(int));
         std::memcpy(data.data(), packet.data() + sizeof(RTPHeader), bytes_received - sizeof(RTPHeader));
         return data;
     }
     
 private:
-    struct Stream {
+    struct Stream{
         uint32_t ssrc;
         uint16_t seq_num;
         uint32_t timestamp;
         int port;
         PayloadType payload_type;
     };
-    
     Stream* stream;
     int send_socket;
     int recv_socket;
-    struct sockaddr_in send_socket_address;
-    struct sockaddr_in recv_socket_address;
+    sockaddr_in send_socket_address;
+    sockaddr_in recv_socket_address;
     socklen_t socket_address_size = sizeof(send_socket_address);
 };
 
@@ -243,7 +237,7 @@ public:
     RelayNode() : Node("relay_node"){
         // --- Sockets + ROS2 startup ---
         std::cout << "[i] Starting stream handlers...\n";
-        WSAStartup(MAKEWORD(2, 2), &wsa_data);
+        Pa_Initialize();
         // -- base + audio --
         base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         base_socket.is_recv_running.store(true);
@@ -265,8 +259,14 @@ public:
         // --- Opus + PortAudio startup ---
         int opus_error;
         opus_encoder = opus_encoder_create(AUDIO_SAMPLE_RATE, 1, OPUS_APPLICATION_AUDIO, &opus_error);
-        Pa_Initialize();
-        Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);     // Also initializes audio thread
+        PaStreamParameters stream_params;
+        stream_params.device = mic_ports[0];
+        stream_params.channelCount = 1;
+        stream_params.sampleFormat = paInt16;
+        stream_params.suggestedLatency = Pa_GetDeviceInfo(mic_ports[0])->defaultLowInputLatency;
+        stream_params.hostApiSpecificStreamInfo = nullptr;
+        Pa_OpenStream(&stream, &stream_params, nullptr, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, paClipOff, audioCallback, this);
+        //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);     // Also initializes audio thread
         Pa_StartStream(stream);
 
         // --- Threads startup - Program begins ---
@@ -274,9 +274,9 @@ public:
         // -- base --
         base_socket.send_thread = std::thread([this](){
             while(base_socket.is_send_running.load()){
-                // --- Mutex lock for thread-safe access ---
-                std::vector<float> packet(sizeof(BasePacket)/sizeof(float)), orientation, angles, tracks, arms, sensor;
-                float gas;
+                std::vector<float> packet(sizeof(BasePacket)/sizeof(float)), orientation, tracks, sensor, joints;
+                float gas, arms;
+                // --- Mutex locks for thread-safe access ---
                 {
                     std::lock_guard<std::mutex> lock(sensor_mutex);
                     sensor = sensor_data;
@@ -297,27 +297,41 @@ public:
                     std::lock_guard<std::mutex> lock(encoder_mutex);
                     arms = encoder_data;
                 }
+                {
+                    std::lock_guard<std::mutex> lock(joint1_mutex);
+                    joints.push_back(joint1_data);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(joint2_mutex);
+                    joints.push_back(joint2_data);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(joint3_mutex);
+                    joints.push_back(joint3_data);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(joint4_mutex);
+                    joints.push_back(joint4_data);
+                }
                 if(sensor.empty())
                     sensor = {0, 0, 0};
                 if(orientation.empty())
                     orientation = {0, 0, 0};
-                if(angles.empty())
-                    angles = {0, 0, 0, 0};
                 if(tracks.empty())
                     tracks = {0, 0};
-                if(arms.empty())
-                    arms = {0, 0};
+                if(joints.size() != 4)
+                    joints = {0, 0, 0, 0};
 
                 BasePacket base_packet = {
                     orientation[0],
                     orientation[1],
                     orientation[2],
-                    arms[0],
-                    arms[1],
-                    angles[0],
-                    angles[1],
-                    angles[2],
-                    angles[3],
+                    arms,
+                    arms,
+                    joints[0],
+                    joints[1],
+                    joints[2],
+                    joints[3],
                     tracks[0],
                     tracks[1],
                     sensor[0],
@@ -426,30 +440,20 @@ public:
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(gas_mutex);
             gas_data = msg.data;
-            //std::cout << "gas: " << gas_data << "\n";
         });
         imu_subscription = this->create_subscription<sensor_msgs::msg::Imu>(IMU_TOPIC, 10, [this](const sensor_msgs::msg::Imu::SharedPtr msg){
             std::vector<float> orientation;
-            tf2::Quaternion q(
-                msg->orientation.x,
-                msg->orientation.y,
-                msg->orientation.z,
-                msg->orientation.w
-            );
             double roll, pitch, yaw;
             double sinr_cosp = 2 * (msg->orientation.w * msg->orientation.x + msg->orientation.y * msg->orientation.z);
             double cosr_cosp = 1 - 2 * (msg->orientation.x * msg->orientation.x + msg->orientation.y * msg->orientation.y);
-            roll = std::atan2(sinr_cosp, cosr_cosp) * 180.0 / M_PI;
-
             double sinp = 2 * (msg->orientation.w * msg->orientation.y - msg->orientation.z * msg->orientation.x);
-            if (std::abs(sinp) >= 1)
-                pitch = std::copysign(90.0, sinp); // use 90 degrees if out of range
-            else
-                pitch = std::asin(sinp) * 180.0 / M_PI;
-
-            // yaw (Z-axis rotation)
             double siny_cosp = 2 * (msg->orientation.w * msg->orientation.z + msg->orientation.x * msg->orientation.y);
             double cosy_cosp = 1 - 2 * (msg->orientation.y * msg->orientation.y + msg->orientation.z * msg->orientation.z);
+            roll = std::atan2(sinr_cosp, cosr_cosp) * 180.0 / M_PI;
+            if(std::abs(sinp) >= 1)
+                pitch = std::copysign(90.0, sinp);
+            else
+                pitch = std::asin(sinp) * 180.0 / M_PI;
             yaw = std::atan2(siny_cosp, cosy_cosp) * 180.0 / M_PI;
             orientation.push_back(static_cast<float>(roll));
             orientation.push_back(static_cast<float>(pitch));
@@ -458,32 +462,49 @@ public:
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(imu_mutex);
             imu_data = orientation;
-            //std::cout << "imu quat: " << msg->orientation.x << " " << msg->orientation.y << " " << msg->orientation.z << " " << msg->orientation.w << "\n";
-            //std::cout << "imu euler: " << roll << " " << pitch << " " << yaw << "\n";
         });
         thermal_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(THERMAL_TOPIC, 10, [this](const std_msgs::msg::Float32MultiArray msg){
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(thermal_mutex);
             thermal_data = msg.data;
-            //std::cout << "thermal: size " << thermal_data.size() << " first " << (thermal_data.empty() ? -999999.0 : thermal_data[0]) << "\n";
         });
-        track_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(TRACK_TOPIC, 10, [this](const std_msgs::msg::Float32MultiArray msg){
+        track_subscription = this->create_subscription<geometry_msgs::msg::Vector3>(TRACK_TOPIC, 10, [this](const geometry_msgs::msg::Vector3 msg){
+            std::vector<float> velocities;
+            velocities.push_back(msg.x);
+            velocities.push_back(msg.y);
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(track_mutex);
-            track_data = msg.data;
-            //std::cout << "track: " << track_data[0] << " " << track_data[1] << "\n";
+            track_data = velocities;
         });
-        encoder_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(ENCODER_TOPIC, 10, [this](const std_msgs::msg::Float32MultiArray msg){
+        encoder_subscription = this->create_subscription<std_msgs::msg::Float32>(ENCODER_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(encoder_mutex);
             encoder_data = msg.data;
-            //std::cout << "encoder: " << encoder_data[0] * 180.0 / M_PI << " " << encoder_data[1] * 180.0 / M_PI << "\n";
         });
         sensor_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(SENSOR_TOPIC, 10, [this](const std_msgs::msg::Float32MultiArray msg){
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(sensor_mutex);
             sensor_data = msg.data;
-            //std::cout << "sensor: " << sensor_data[0] << " " << sensor_data[1] << " " << sensor_data[2] << "\n";
+        });
+        joint1_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT1_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(joint1_mutex);
+            joint1_data = msg.data;
+        });
+        joint2_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT2_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(joint2_mutex);
+            joint2_data = msg.data;
+        });
+        joint3_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT3_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(joint3_mutex);
+            joint3_data = msg.data;
+        });
+        joint4_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT4_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
+            // --- Mutex locks for thread-safe updates ---
+            std::lock_guard<std::mutex> lock(joint4_mutex);
+            joint4_data = msg.data;
         });
         std::cout << "[i] Setup done\n";
     }
@@ -527,7 +548,6 @@ public:
                 video_sockets[i].recv_thread.join();
         }
         std::cout << "[i] Video channels closed\n";
-        WSACleanup();
         std::cout << "[i] Bye\n";
     }
     void destroy(){
@@ -584,18 +604,26 @@ private:
     };
 
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr gas_subscription;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr encoder_subscription;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint1_subscription;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint2_subscription;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint3_subscription;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint4_subscription;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr track_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr encoder_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_subscription;
+    rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     float gas_data = 0;
-    std::vector<float> imu_data;
-    std::vector<float> thermal_data;
-    std::vector<float> track_data;
-    std::vector<float> encoder_data;
-    std::vector<float> sensor_data;
-    std::vector<int> gui_data;
+    float encoder_data = 0;
+    float joint1_data = 0;
+    float joint2_data = 0;
+    float joint3_data = 0;
+    float joint4_data = 0;
+    std::vector<float> imu_data = {};
+    std::vector<float> thermal_data = {};
+    std::vector<float> track_data = {};
+    std::vector<float> sensor_data = {};
+    std::vector<int> gui_data = {};
     std::mutex imu_mutex;
     std::mutex gas_mutex;
     std::mutex thermal_mutex;
@@ -603,10 +631,13 @@ private:
     std::mutex encoder_mutex;
     std::mutex sensor_mutex;
     std::mutex gui_mutex;
+    std::mutex joint1_mutex;
+    std::mutex joint2_mutex;
+    std::mutex joint3_mutex;
+    std::mutex joint4_mutex;
     PaStream* stream;
     PaError err;
     OpusEncoder* opus_encoder;
-    WSADATA wsa_data;
     SocketStruct audio_socket;
     SocketStruct base_socket;
     std::vector<SocketStruct> video_sockets;
@@ -615,7 +646,6 @@ private:
 
 int main(int argc, char** argv){
     std::cout << "[i] Hi Windows\n";
-    //cam_ports = scanWebcams();
     // --- RelayNode handles everything ---
     rclcpp::init(argc, argv);
     auto node = std::make_shared<RelayNode>();
