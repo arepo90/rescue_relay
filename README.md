@@ -7,24 +7,38 @@ This repository contains a ROS2 package for a C++ based relay node. It integrate
 - Fully automated processes; once started, manages the GUI connection/disconnection automatically and indefinitely.
 - Outsorces computing-intensive tasks to the workstation.
 - Creates and handles a virtually limitless number of data channels in parallel.
+- Automatic Linux/Windows differentiation on CMakeLists.
 
 ## Dependencies
 
-- ROS2 (Humble or newer):
-  - `rclcpp`, `sensor_msgs`, `nav_msgs`, `sensor_msgs`, `tf2_ros`
-- Vcpkg (Windows):
-  - OpenCV (4.10.x or newer)
-  - PortAudio (19.7)
-  - Opus (1.5.2)
+- ROS2 (Jazzy recommended):
+  - `rclcpp`, `std_msgs`, `sensor_msgs`, `geometry_msgs`
+- Windows (Vcpkg):
+  - OpenCV 
+  - PortAudio
+  - Opus
+  - FFmpeg
+  - ZLib
+- Linux:
+  - OpenCV core (4.10.x or newer)
+  - PortAudio 
+  - Opus
 
 ## ROS2 subscriptions
 
-| Topic            | Type                          | Description                             |
-|------------------|-------------------------------|-----------------------------------------|
-| `/motors_info`   | `std_msgs/msg/String`         | Parsed string with velocities and RPMs  |
-| `/odom`          | `nav_msgs/msg/Odometry`       | Computed robot odometry                 |
-| `/joint_states`  | `sensor_msgs/msg/JointState`  | Articulation positions                  |
-| `/sensor?`       | `?`                           | ?                                       |
+| Topic               | Type                             | Description                     |
+|---------------------|----------------------------------|---------------------------------|
+| `/imu_data`         | `sensor_msgs/msg/Imu`            | BNO055 sensor data              |
+| `/track_velocity`   | `geometry_msgs/msg/Vector3`      | Left and right track velocities |
+| `/thermal_image`    | `std_msgs/msg/Float32MultiArray` | 8x8 thermal camera image        |
+| `/encoder_position` | `std_msgs/msg/Float32`           | Arm angles                      |
+| `/mq2_gas`          | `std_msgs/msg/Float32`           | Gas sensor data                 |
+| `/joint_base`       | `std_msgs/msg/Float32`           | Arm base joint angle            |
+| `/joint_shoulder`   | `std_msgs/msg/Float32`           | Arm shoulder joint angle        |
+| `/joint_elbow`      | `std_msgs/msg/Float32`           | Arm elbow joint angle           |
+| `/joint_hand`       | `std_msgs/msg/Float32`           | Gripper angle                   |
+| `/??`               | `??`                             | Magnetometer data               |
+
 
 ## Installation & Usage
 
@@ -63,7 +77,7 @@ colcon build --packages-select rescue_relay
 
 3. Source install
 ```
-source install/setup.bashTh
+source install/setup.bash
 ```
 
 ### Run
@@ -86,6 +100,7 @@ The program regularly outputs messages regarding the state of execution. They ar
 
 ## Notes
 
+- By default, it selects a single camera on port 0 and the default audio device. You can modify the chosen ports and number of devices through the `cam_ports` and `mic_ports` vectors.
 - This is a _fire-and-forget_ type of program; it's supposed to be started and kept in the background indefinitely.
 - The video sources are reserved for the entire duration of the program.
 - The first 4 socket ports from `START_PORT` (inclusive) are always used, with increasing pairs proportional to the number of video sources.
