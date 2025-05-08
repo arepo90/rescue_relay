@@ -16,9 +16,9 @@
 #define GAS_TOPIC "mq2_gas"
 #define TRACK_TOPIC "track_velocity"
 #define THERMAL_TOPIC "thermal_image" 
-#define SENSOR_TOPIC "sensor_topic"
+#define SENSOR_TOPIC "magnetometer"
 #define JOINT1_TOPIC "joint_base"
-#define JOINT2_TOPIC "joint_shouler"
+#define JOINT2_TOPIC "joint_shoulder"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
 
@@ -32,7 +32,7 @@ public:
         thermal_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(THERMAL_TOPIC, 10);
         track_publisher_ = this->create_publisher<geometry_msgs::msg::Vector3>(TRACK_TOPIC, 10);
         encoder_publisher_ = this->create_publisher<std_msgs::msg::Float32>(ENCODER_TOPIC, 10);
-        sensor_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(SENSOR_TOPIC, 10);
+        sensor_publisher_ = this->create_publisher<geometry_msgs::msg::Vector3>(SENSOR_TOPIC, 10);
         joint1_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT1_TOPIC, 10);
         joint2_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT2_TOPIC, 10);
         joint3_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT3_TOPIC, 10);
@@ -147,8 +147,10 @@ private:
             encoder_value = 0.0;
 
         // Sensor topic: 3 random numbers between -1 and 1
-        std_msgs::msg::Float32MultiArray sensor_msg;
-        sensor_msg.data = {random_float(-1.0, 1.0), random_float(-1.0, 1.0), random_float(-1.0, 1.0)};
+        geometry_msgs::msg::Vector3 sensor_msg;
+        sensor_msg.x = random_float(-400.0, 400.0);
+        sensor_msg.y = random_float(-400.0, 400.0);
+        sensor_msg.z = random_float(-400.0, 400.0);
         sensor_publisher_->publish(sensor_msg);
 
     }
@@ -167,7 +169,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_publisher_;
     rclcpp::Publisher<geometry_msgs::msg::Vector3>::SharedPtr track_publisher_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr encoder_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_publisher_;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3>::SharedPtr sensor_publisher_;
     rclcpp::TimerBase::SharedPtr timer_;
     std::default_random_engine rng_;
 };

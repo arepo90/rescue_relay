@@ -39,9 +39,9 @@
 #define GAS_TOPIC "mq2_gas"
 #define TRACK_TOPIC "track_velocity"
 #define THERMAL_TOPIC "thermal_image" 
-#define SENSOR_TOPIC "sensor_topic"
+#define SENSOR_TOPIC "magnetometer"
 #define JOINT1_TOPIC "joint_base"
-#define JOINT2_TOPIC "joint_shouler"
+#define JOINT2_TOPIC "joint_shoulder"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
 #define SERVER_IP "127.0.0.1"
@@ -215,7 +215,6 @@ public:
         // --- Sockets + ROS2 startup ---
         std::cout << "[i] Starting stream handlers...\n";
         WSAStartup(MAKEWORD(2, 2), &wsa_data);
-        Pa_Initialize();
         // -- base + audio --
         base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         base_socket.is_recv_running.store(true);
@@ -237,6 +236,7 @@ public:
         // --- Opus + PortAudio startup ---
         int opus_error;
         opus_encoder = opus_encoder_create(AUDIO_SAMPLE_RATE, 1, OPUS_APPLICATION_AUDIO, &opus_error);
+        Pa_Initialize();
         PaStreamParameters stream_params;
         stream_params.device = mic_ports[0];
         stream_params.channelCount = 1;
@@ -244,8 +244,7 @@ public:
         stream_params.suggestedLatency = Pa_GetDeviceInfo(mic_ports[0])->defaultLowInputLatency;
         stream_params.hostApiSpecificStreamInfo = nullptr;
         Pa_OpenStream(&stream, &stream_params, nullptr, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, paClipOff, audioCallback, this);
-        //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);     // Also initializes audio thread
-        Pa_StartStream(stream);
+        //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);
 
         // --- Threads startup - Program begins ---
         std::cout << "[i] Initializing threads...\n";
@@ -330,16 +329,15 @@ public:
                 else if(data[1] == 0){
                     std::cout << "[i] GUI connected\n";
                     is_connected.store(true);
-                    audio_socket.is_active.store(false);
-                    for(int i = 0; i < video_sockets.size(); i++){
-                        video_sockets[i].is_active.store(false);
-                    }
                 } 
                 else if(data[1] == -1){
                     std::cout << "[i] GUI disconnected\n";
                     is_connected.store(false);
-                    //this->destroy();
-                    //break;
+                }
+                audio_socket.is_active.store(false);
+                Pa_StopStream(stream);
+                for(int i = 0; i < video_sockets.size(); i++){
+                    video_sockets[i].is_active.store(false);
                 }
                 // --- Mutex lock for thread-safe updates ---
                 std::lock_guard<std::mutex> lock(gui_mutex);
@@ -352,6 +350,10 @@ public:
                 std::vector<int> data = audio_socket.target_socket->recvPacket();
                 if(data.size() == 0 || data[0] != 0) continue;
                 audio_socket.is_active.store((bool)data[1]);
+                if((bool)data[1])
+                    Pa_StartStream(stream);
+                else    
+                    Pa_StopStream(stream);
             }
         });
         // -- video --
@@ -366,6 +368,7 @@ public:
                         std::cout << "[e] Could not open webcam on port " << cam_ports[i] << " for video socket " << i << "\n";
                         return;
                     }
+                    std::cout << "[i] Camera on port " << cam_ports[i] << " reserved\n";
                 }
                 cv::Mat frame;
                 std::vector<unsigned char> compressed_data;
@@ -387,10 +390,38 @@ public:
                             }
                             frame = cv::Mat(8, 8, CV_32F);
                             std::memcpy(frame.data, data.data(), data.size()*sizeof(float));
+                            cv::resize(frame, frame, cv::Size(64, 64), 0, 0, cv::INTER_CUBIC);
+                            double minVal, maxVal;
+                            cv::minMaxLoc(frame, &minVal, &maxVal);
+                            cv::Mat gradX, gradY, gradMag;
+                            cv::Sobel(frame, gradX, CV_32F, 1, 0, 3);
+                            cv::Sobel(frame, gradY, CV_32F, 0, 1, 3);
+                            cv::magnitude(gradX, gradY, gradMag);
+                            cv::Mat upGradient;
+                            cv::resize(gradMag, upGradient, cv::Size(64, 64), 0, 0, cv::INTER_LINEAR);
+                            cv::normalize(upGradient, upGradient, 0, 1, cv::NORM_MINMAX);
+                            cv::Mat enhanced = frame.clone();
+                            for (int y = 0; y < enhanced.rows; y++) {
+                                for (int x = 0; x < enhanced.cols; x++) {
+                                    float gradientValue = upGradient.at<float>(y, x);
+                                    // Apply stronger enhancement in areas of high thermal gradient
+                                    enhanced.at<float>(y, x) = frame.at<float>(y, x) * (1.0f + gradientValue * 0.3f);
+                                }
+                            }
+                            cv::normalize(enhanced, enhanced, minVal, maxVal, cv::NORM_MINMAX);
+                            cv::Mat normalized;
+                            cv::normalize(enhanced, normalized, 0, 255, cv::NORM_MINMAX);
+                            normalized.convertTo(normalized, CV_8U);
+                            
+                            cv::Mat colormap;
+                            cv::applyColorMap(normalized, colormap, cv::COLORMAP_JET);
+                            frame = colormap.clone();
+                            /*
                             cv::normalize(frame, frame, 0, 255, cv::NORM_MINMAX);
                             frame.convertTo(frame, CV_8U);
                             cv::applyColorMap(frame, frame, cv::COLORMAP_JET);
                             cv::resize(frame, frame, cv::Size(1920, 1080), cv::INTER_NEAREST);
+                            */
                             std::this_thread::sleep_for(std::chrono::milliseconds(35));
                         }
                         if(frame.empty()){
@@ -459,10 +490,14 @@ public:
             std::lock_guard<std::mutex> lock(encoder_mutex);
             encoder_data = msg.data;
         });
-        sensor_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(SENSOR_TOPIC, 10, [this](const std_msgs::msg::Float32MultiArray msg){
+        sensor_subscription = this->create_subscription<geometry_msgs::msg::Vector3>(SENSOR_TOPIC, 10, [this](const geometry_msgs::msg::Vector3 msg){
+            std::vector<float> sensor;
+            sensor.push_back(msg.x);
+            sensor.push_back(msg.y);
+            sensor.push_back(msg.z);
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(sensor_mutex);
-            sensor_data = msg.data;
+            sensor_data = sensor;
         });
         joint1_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT1_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
             // --- Mutex locks for thread-safe updates ---
@@ -541,10 +576,7 @@ private:
     int audioProcess(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags){
         // --- Callback runs again after paContinue is returned, so no loop required ---
         if(!audio_socket.is_send_running.load()) return paComplete;
-        if(!input || !audio_socket.is_active.load()){
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            return paContinue;
-        }
+        if(!input || !audio_socket.is_active.load()) return paContinue;
         // --- Opus encode + send ---
         unsigned char encoded_data[4096];
         int encoded_size = opus_encode(opus_encoder, (const opus_int16*)input, AUDIO_FRAME_SIZE, encoded_data, sizeof(encoded_data));
@@ -590,7 +622,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint4_subscription;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_subscription;
+    rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sensor_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     float gas_data = 0;
     float encoder_data = 0;
@@ -599,7 +631,7 @@ private:
     float joint3_data = 0;
     float joint4_data = 0;
     std::vector<float> imu_data = {};
-    std::vector<float> thermal_data = {};
+    std::vector<float> thermal_data = {50.5025, 56.9884, 61.9211, 64.6447, 64.6447, 61.9211, 56.9884, 50.5025, 56.9884, 64.6447, 70.8452, 74.5049, 74.5049, 70.8452, 64.6447, 56.9884, 61.9211, 70.8452, 78.7868, 84.1886, 84.1886, 78.7868, 70.8452, 61.9211, 64.6447, 74.5049, 84.1886, 92.9289, 92.9289, 84.1886, 74.5049, 64.6447, 64.6447, 74.5049, 84.1886, 92.9289, 92.9289, 84.1886, 74.5049, 64.6447, 61.9211, 70.8452, 78.7868, 84.1886, 84.1886, 78.7868, 70.8452, 61.9211, 56.9884, 64.6447, 70.8452, 74.5049, 74.5049, 70.8452, 64.6447, 56.9884, 50.5025, 56.9884, 61.9211, 64.6447, 64.6447, 61.9211, 56.9884, 50.5025};
     std::vector<float> track_data = {};
     std::vector<float> sensor_data = {};
     std::vector<int> gui_data = {};

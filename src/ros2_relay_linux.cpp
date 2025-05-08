@@ -47,8 +47,8 @@
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
-#define VIDEO_WIDTH 1920
-#define VIDEO_HEIGHT 1080
+#define VIDEO_WIDTH 1280
+#define VIDEO_HEIGHT 720
 #define MAX_UDP_PACKET_SIZE 65507   // 65507 bytes
 #define FRAGMENTATION_FLAG 0x8000   // RTP header flag
 
@@ -254,6 +254,7 @@ public:
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].is_send_running.store(true);
             video_sockets[i].is_recv_running.store(true);
+            video_sockets[i].is_active.store(false);
         }
 
         // --- Opus + PortAudio startup ---
@@ -267,7 +268,6 @@ public:
         stream_params.hostApiSpecificStreamInfo = nullptr;
         Pa_OpenStream(&stream, &stream_params, nullptr, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, paClipOff, audioCallback, this);
         //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);     // Also initializes audio thread
-        Pa_StartStream(stream);
 
         // --- Threads startup - Program begins ---
         std::cout << "[i] Initializing threads...\n";
@@ -360,8 +360,6 @@ public:
                 else if(data[1] == -1){
                     std::cout << "[i] GUI disconnected\n";
                     is_connected.store(false);
-                    //this->destroy();
-                    //break;
                 }
                 // --- Mutex lock for thread-safe updates ---
                 std::lock_guard<std::mutex> lock(gui_mutex);
@@ -374,6 +372,10 @@ public:
                 std::vector<int> data = audio_socket.target_socket->recvPacket();
                 if(data.size() == 0 || data[0] != 0) continue;
                 audio_socket.is_active.store((bool)data[1]);
+                if((bool)data[1])
+                    Pa_StartStream(stream);
+                else
+                    Pa_StopStream(stream);
             }
         });
         // -- video --
@@ -388,6 +390,7 @@ public:
                         std::cout << "[e] Could not open webcam on port " << cam_ports[i] << " for video socket " << i << "\n";
                         return;
                     }
+                    std::cout << "[i] Camera on port " << cam_ports[i] << " reserved\n";
                 }
                 cv::Mat frame;
                 std::vector<unsigned char> compressed_data;
@@ -403,7 +406,7 @@ public:
                                 data = thermal_data;
                             }
                             if(data.size() != 64){
-                                std::cout << "[w] SUBSECTION FILTER THERMAL | Invalid payload: missing pixels";
+                                std::cout << "[w] SUBSECTION FILTER THERMAL | Invalid payload: missing pixels\n";
                                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                                 continue;
                             }
@@ -416,7 +419,7 @@ public:
                             std::this_thread::sleep_for(std::chrono::milliseconds(35));
                         }
                         if(frame.empty()){
-                            std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << "n";
+                            std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << "\n";
                             break;
                         }
                         cv::imencode(".jpg", frame, compressed_data, {cv::IMWRITE_JPEG_QUALITY, 40});
@@ -562,10 +565,7 @@ private:
     int audioProcess(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags){
         // --- Callback runs again after paContinue is returned, so no loop required ---
         if(!audio_socket.is_send_running.load()) return paComplete;
-        if(!input || !audio_socket.is_active.load()){
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            return paContinue;
-        }
+        if(!input || !audio_socket.is_active.load()) return paContinue;
         // --- Opus encode + send ---
         unsigned char encoded_data[4096];
         int encoded_size = opus_encode(opus_encoder, (const opus_int16*)input, AUDIO_FRAME_SIZE, encoded_data, sizeof(encoded_data));
@@ -609,9 +609,9 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint2_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint3_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint4_subscription;
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_subscription;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
+    rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sensor_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     float gas_data = 0;
     float encoder_data = 0;
