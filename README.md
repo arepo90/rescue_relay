@@ -29,16 +29,15 @@ This repository contains a ROS2 package for a C++ based relay node. It integrate
 | Topic               | Type                             | Description                     |
 |---------------------|----------------------------------|---------------------------------|
 | `/imu_data`         | `sensor_msgs/msg/Imu`            | BNO055 sensor data              |
-| `/track_velocity`   | `geometry_msgs/msg/Vector3`      | Left and right track velocities |
+| `/track_velocity`   | `geometry_msgs/msg/Vector3`      | Track velocities (z is unused)  |
+| `/magnetometer`     | `geometry_msgs/msg/Vector3`      | Magnetometer data               |
 | `/thermal_image`    | `std_msgs/msg/Float32MultiArray` | 8x8 thermal camera image        |
-| `/encoder_position` | `std_msgs/msg/Float32`           | Arm angles                      |
+| `/encoder_position` | `std_msgs/msg/Float32`           | Flipper angles                  |
 | `/mq2_gas`          | `std_msgs/msg/Float32`           | Gas sensor data                 |
 | `/joint_base`       | `std_msgs/msg/Float32`           | Arm base joint angle            |
 | `/joint_shoulder`   | `std_msgs/msg/Float32`           | Arm shoulder joint angle        |
 | `/joint_elbow`      | `std_msgs/msg/Float32`           | Arm elbow joint angle           |
-| `/joint_hand`       | `std_msgs/msg/Float32`           | Gripper angle                   |
-| `/??`               | `??`                             | Magnetometer data               |
-
+| `/joint_hand`       | `std_msgs/msg/Float32`           | Arm gripper angle               |
 
 ## Installation & Usage
 
@@ -100,7 +99,7 @@ The program regularly outputs messages regarding the state of execution. They ar
 
 ## Notes
 
-- By default, it selects a single camera on port 0 and the default audio device. You can modify the chosen ports and number of devices through the `cam_ports` and `mic_ports` vectors.
+- By default, it scans and selects the available cameras, as well as the default audio device. You can modify the ports manually through the `cam_` and `mic_` vectors.
 - This is a _fire-and-forget_ type of program; it's supposed to be started and kept in the background indefinitely.
 - The video sources are reserved for the entire duration of the program.
 - The first 4 socket ports from `START_PORT` (inclusive) are always used, with increasing pairs proportional to the number of video sources.
