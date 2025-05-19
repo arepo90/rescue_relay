@@ -6,10 +6,10 @@ The following is a full explanation of the `ros2_relay` C++ program.
 
 In general, different conventions are used to refer to different concepts:
 
-- **ALL_CAPS**: Constant or permanent declarations, generally stated as preprocessor definitions.
+- **ALL_CAPS**: Constant or permanent declarations, generally stated as preprocessor definitions (i.e.: `const` or `#define`).
 - **snake_case**: Variables of all kinds, pointers and object instances.
 - **camelCase**: Class methods and functions of any kind.
-- **PascalCase**: Struct, class, and object declarations.
+- **PascalCase**: Struct, class, and object names and declarations.
 
 ## Terminology
 
@@ -18,11 +18,82 @@ In general, different conventions are used to refer to different concepts:
 - A **payload** is the relevant data or information sent inside a packet.
 - A **packet** is an entire data structure meant for transmission. Contains a header and one or more payloads.
 - A **header** is a data structure that contains metadata about the rest of the payload, generally placed at the beginning of the packet.
-- **Fragmentation** is the process of separating particularly large payloads into sections (fragments) and handling each one as a payload in a different packet.
+- **Fragmentation** is the process of separating particularly large payloads into sections (fragments) and handling each one as a sub-payload in a different packet.
 - A **network port** is a virtual point where a connection starts and/or ends. A socket needs to point to a particular port on any given IP address.
 - A **USB port** is a virtual index refering to a physical device connected through USB.
 - A **declaration** is the act of creating a variable, object, etc., but not giving it any initial state. 
 - An **initialization** is the act of assigning an initial state to a variable, object, etc.
+- A **flag** is a boolean or _std::atomic&lt;bool&gt;_ variable that allows a processing loop to be executed (activated = set as _true_, deactivated = set as _false_). The `is_running` flags are activated once on startup and deactivated on shutdown to end all threads, while the `is_active` flags may change throughout the program's execution and serve as a _pause_ or _resume_ indicator.
+- **send** refers to all variables, objects, processes, and threads that handle communication from the relay to the GUI.
+- **recv** refers to all variables, objects, processes, and threads that handle communication from the GUI to the relay.
+
+## Logs
+
+The program regularly outputs console messages regarding the state of execution. They generally mark the beginning or end of a particularly relevant piece of logic, and are followed by `...` when a blocking function is awaiting a response.
+
+They are, in increasing order of severity:
+- **Info `[i]`**: General information; only appear during the startup and shutdown processes, or when the connection status changes.
+- **Warning `[w]`**: Data warnings; generally appear due to unexpected or corrupt data from external sources.
+- **Error `[e]`**: Fatal errors that end the program's execution or edge cases due to improper shutdown.
+
+> [!TIP]
+> The mosts important log messages to watch out for are `[i] Setup done` (program started correctly and is awaiting a connection), `[i] GUI connected` (connection to the GUI has been established and streams should be able to start), `[i] GUI disconnected` (GUI was closed and the program is awaiting a new connetion).
+
+## Overview
+
+`rescue_relay` is a rclcpp package, and as such, it is built using colcon and ran using ROS2. It serves as a middleman or _relay_ between the robot's sensor data on the microcontrollers and the GUI program on the remote workstation.
+
+> [!NOTE]
+> With the exception of network sockets, all functions and libraries are cross-platform. The only differences between `ros2_relay.cpp` and `ros2_relay_linux.cpp` are the `#include` headers and the socket implementations inside the _RTPStreamHandler_ class. The OS is automatically detected by CMake during build, so the executable is always called as `relay` regardless of the platform. 
+
+On startup, the program performs the following actions:
+1. Start the ROS2 node.
+2. Reserve the microphone and video sources.
+3. Start the base, audio, and video channels.
+4. Subscribe to the ROS2 topics.
+5. Start the base, audio and video threads.
+6. Await a connection.
+
+It should be noted that audio and video streaming do **not** start immediately after a connection is established; their send threads start with their `is_active` flag deactivated, so their loops wait for a while and skip to the next iteration. It is only after a packet is received and the flag is activated that the actual send logic can be processed.
+
+The GUI is designed to give a notification once when it starts and once again when it shuts down, but the relay itself is not supposed to shut down under any circumstances (unless a fatal error appears). As such, when the GUI disconnects, the relay enters a standby mode while it awaits a new connection.
+
+### Base channel
+
+- send thread:
+  1. Copy data from internal buffers.
+  2. Assemble packet.
+  3. Send packet to GUI
+- recv thread:
+  1. Await a packet.
+  2. Update relevant flags.
+  3. Pause/Resume audio and video streams (according to the flags received).
+ 
+### Audio channel
+
+- send thread:
+  1. Await `is_active` flag.
+  2. Capture audio sample using PortAudio
+  3. Encode sample using Opus.
+  4. Send to GUI.
+- recv thread:
+  1. Await a packet.
+  2. Update `is_active` flag.
+  3. Pause/Resume PortAudio stream (according to the flag received).
+
+> [!NOTE]
+> While a deactivated `is_active` flag should skip the execution and prevent audio recording when not needed, PortAudio holds an internal buffer and works in magical and mysterious ways, so manually calling `Pa_StopStream(stream)` to pause and `Pa_StartStream(stream)` to resume is also needed.
+ 
+### Video channels
+
+- send thread:
+  1. Await `is_active` flag.
+  2. Capture frame from corresponding video source.
+  3. Encode frame as _jpeg_ using OpenCV.
+  4. Send to GUI.
+- recv thread:
+  1. Await a packet.
+  2. Update `is_active` flag. 
 
 ## Initial settings
 
@@ -48,7 +119,10 @@ The rest of the preprocessor definitions directly modify the behavior of the ROT
 
 ### Media sources
 
-The `mic_port` and `cam_ports` variables tell the program which physical devices to reserve, and as such must point to valid USB ports. The `cam_names` _std::vector_ is mostly optional, as the program will grab a string for each camera in the order they are in. It should be noted that `cam_ports` serves as a guide and the actual ports are grabbed from the `cam_info` _std::map_ that is created on `scanPorts()`. 
+The `mic_port` and `cam_ports` variables tell the program which physical devices to reserve, and as such must point to valid USB ports. The contents of `cam_names` have no limitations as they only serve as a guide for the GUI, but there **must** be at least as many names as there are `cam_ports`. 
+
+> [!NOTE]
+> It should be noted that `cam_ports` serves only as a guide and the actual ports are grabbed from `cam_info`, which is created on `scanPorts()`. 
 
 > [!CAUTION]
 > Depending on the setup, the program may not actually check if the ports are valid. While invalid video ports are disregarded and simply give no output, an invalid mic port may throw a segmentation fault on program execution.
@@ -56,7 +130,7 @@ The `mic_port` and `cam_ports` variables tell the program which physical devices
 ## Helpers
 
 - `BasePacket`: Carries all sensor information (that can be stored on the stack) as floats.
-- `RTPHeader`: Carries all stream metadata needed for transmission. The first five bitfields (`cc`, `x`, `p`, `version`, `pt`) are not actually used but serves as padding. The other values are:
+- `RTPHeader`: Carries all stream metadata needed for transmission. The first five bitfields (`cc`, `x`, `p`, `version`, `pt`) are not actually used but serve as padding. The other values are:
   - `m`: Marker. Contains the total number of fragments for a given payload (same in all fragments).
   - `seq`: Sequence number. Identifies the current fragment for reassembly.
   - `timestamp`: Timestamp. Not actually used in the current implementation.
@@ -65,7 +139,7 @@ The `mic_port` and `cam_ports` variables tell the program which physical devices
 
 The `scanPorts()` function runs once on program startup, and its behavior depends on the flag parameter status:
 - **Disabled (default)**: Assumes the data on `cam_ports` is valid and uses it to assemble `cam_info`.
-- **Enabled**: Disregards `cam_ports` and instead checks the first five USB ports. Any available device is then added to `cam_info`.
+- **Enabled**: Disregards `cam_ports` and instead checks the first five USB ports. Any available device is then added to `cam_info` and anounced through an `[i]` message.
 
 > [!NOTE]
 > PortAudio only supports one audio stream at a time. Should an appropiate port not be found after the scan, the port will default to 0.
@@ -78,7 +152,7 @@ The ROTAS stream. Serves as a universal handler for two-way communication of **a
 
 - `Stream`: A helper struct that stores the stream information. Not actually used in the current implementation.
 - Sockets:
-  - `SOCKET`: Send and receive (recv) socket objects.
+  - `SOCKET`: Send and recv socket objects.
   - `sockaddr_in`: Send and recv socket addresses. Bound to the GUI's ip address and two contiguous ports.
   - `socket_address_size`: Helper variable for `sendto()` and `recvfrom()` socket methods.
 
