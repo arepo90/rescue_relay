@@ -8,6 +8,7 @@ This repository contains a ROS2 package for a C++ based relay node. It integrate
 - Outsorces computing-intensive tasks to the workstation.
 - Creates and handles a virtually limitless number of data channels in parallel.
 - Automatic Linux/Windows differentiation on CMakeLists.
+- In-depth [wiki](wiki.md).
 
 ## Dependencies
 
