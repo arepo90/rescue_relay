@@ -99,7 +99,22 @@ The GUI is designed to give a notification once when it starts and once again wh
 
 ### ROS2 topics
 
-All preprocessor definitions ending in `_TOPIC` refer to topic subscriptions, described in more detail [here](README.md). While the changes propagate automatically, more complex settings like data types and callback functions must be modified in the _RelayNode_ class.
+All preprocessor definitions ending in `_TOPIC` refer to topic subscriptions, with the default ones being:
+
+| Topic name          | Type                             | Description                     |
+|---------------------|----------------------------------|---------------------------------|
+| `/imu_data`         | `sensor_msgs/msg/Imu`            | BNO055 sensor data              |
+| `/track_velocity`   | `geometry_msgs/msg/Vector3`      | Track velocities (z is unused)  |
+| `/magnetometer`     | `geometry_msgs/msg/Vector3`      | Magnetometer data               |
+| `/thermal_image`    | `std_msgs/msg/Float32MultiArray` | 8x8 thermal camera image        |
+| `/encoder_position` | `std_msgs/msg/Float32`           | Flipper angles                  |
+| `/mq2_gas`          | `std_msgs/msg/Float32`           | Gas sensor data                 |
+| `/joint_base`       | `std_msgs/msg/Float32`           | Arm base joint angle            |
+| `/joint_shoulder`   | `std_msgs/msg/Float32`           | Arm shoulder joint angle        |
+| `/joint_elbow`      | `std_msgs/msg/Float32`           | Arm elbow joint angle           |
+| `/joint_hand`       | `std_msgs/msg/Float32`           | Arm gripper angle               |
+
+While topic names propagate, more complex settings like data types and callback functions must be modified in the _RelayNode_ class.
 
 ### ROTAS
 
@@ -129,7 +144,13 @@ The `mic_port` and `cam_ports` variables tell the program which physical devices
 
 ## Helpers
 
-- `BasePacket`: Carries all sensor information (that can be stored on the stack) as floats.
+- `BasePacket`: Carries all sensor information (that can be stored on the stack) as floats:
+  - Robot orientation (x, y, z angles)
+  - Arm positions (left, right)
+  - Articulation joint angles (1-4)
+  - Track velocities (left, right)
+  - Magnetometer readings (x, y, z axis)
+  - Gas sensor data
 - `RTPHeader`: Carries all stream metadata needed for transmission. The first five bitfields (`cc`, `x`, `p`, `version`, `pt`) are not actually used but serve as padding. The other values are:
   - `m`: Marker. Contains the total number of fragments for a given payload (same in all fragments).
   - `seq`: Sequence number. Identifies the current fragment for reassembly.
