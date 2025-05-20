@@ -38,7 +38,6 @@ public:
         joint3_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT3_TOPIC, 10);
         joint4_publisher_ = this->create_publisher<std_msgs::msg::Float32>(JOINT4_TOPIC, 10);
 
-
         timer_ = this->create_wall_timer(
             std::chrono::milliseconds(250),
             std::bind(&TestPublisher::publish_messages, this)
@@ -110,9 +109,6 @@ private:
 
         imu_publisher_->publish(imu_msg);
 
-        //std::cout << "imu euler: " << imu_angle << "\n";
-        //std::cout << "imu quat: " << imu_msg.orientation.x << " " << imu_msg.orientation.y << " " << imu_msg.orientation.z << " " << imu_msg.orientation.w << "\n";
-
         if(inc) imu_angle += 15.0;
         else imu_angle -= 15.0;
         if(imu_angle > 45.0)
@@ -120,7 +116,6 @@ private:
         else if(imu_angle < -45.0)
             inc = true;
 
-        // Thermal topic: 64 length vector with random numbers between 20 to 40
         std_msgs::msg::Float32MultiArray thermal_msg;
         thermal_msg.data.resize(64);
         for(auto &value : thermal_msg.data){
@@ -128,7 +123,6 @@ private:
         }
         thermal_publisher_->publish(thermal_msg);
 
-        // Track topic: 2 numbers between -1 and 1 increasing by 0.25
         static float track_value = -1.0;
         geometry_msgs::msg::Vector3 track_msg;
         track_msg.x = track_value;
@@ -137,7 +131,6 @@ private:
         track_value += 0.25;
         if(track_value > 1.0) track_value = -1.0;
 
-        // Encoder topic: 2 numbers between 0 to 2*pi increasing by pi/4
         static float encoder_value = 0.0;
         std_msgs::msg::Float32 encoder_msg;
         encoder_msg.data =  encoder_value;
@@ -146,15 +139,14 @@ private:
         if(encoder_value > 360.0)
             encoder_value = 0.0;
 
-        // Sensor topic: 3 random numbers between -1 and 1
         geometry_msgs::msg::Vector3 sensor_msg;
         sensor_msg.x = random_float(-400.0, 400.0);
         sensor_msg.y = random_float(-400.0, 400.0);
         sensor_msg.z = random_float(-400.0, 400.0);
         sensor_publisher_->publish(sensor_msg);
 
+        std::cout << "publishing...\n";
     }
-
     float random_float(float min, float max){
         std::uniform_real_distribution<float> dist(min, max);
         return dist(rng_);

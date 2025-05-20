@@ -38,7 +38,7 @@
 #define GAS_TOPIC "mq2_gas"
 #define TRACK_TOPIC "track_velocity"
 #define THERMAL_TOPIC "thermal_image" 
-#define SENSOR_TOPIC "sensor_topic"
+#define SENSOR_TOPIC "magnetometer"
 #define JOINT1_TOPIC "joint_base"
 #define JOINT2_TOPIC "joint_shouler"
 #define JOINT3_TOPIC "joint_elbow"
@@ -52,8 +52,8 @@
 #define MAX_UDP_PACKET_SIZE 65507   // 65507 bytes
 #define FRAGMENTATION_FLAG 0x8000   // RTP header flag
 
-std::vector<int> cam_ports = {0};
-std::vector<int> mic_ports = {0};
+std::vector<int> cam_ports = {};
+int mic_port = -1;
 
 struct BasePacket{
     float body_x = 0;
@@ -90,6 +90,10 @@ enum class PayloadType : uint8_t {
     AUDIO_PCM = 98,
     ROS2_ARRAY = 99
 };
+
+void scanPorts(int max_checks = 5){
+
+}
 
 // Linux-compatible RTPStreamHandler class
 class RTPStreamHandler{    
@@ -484,10 +488,14 @@ public:
             std::lock_guard<std::mutex> lock(encoder_mutex);
             encoder_data = msg.data;
         });
-        sensor_subscription = this->create_subscription<std_msgs::msg::Float32MultiArray>(SENSOR_TOPIC, 10, [this](const std_msgs::msg::Float32MultiArray msg){
+        sensor_subscription = this->create_subscription<geometry_msgs::msg::Vector3>(SENSOR_TOPIC, 10, [this](const geometry_msgs::msg::Vector3 msg){
+            std::vector<float> sensor;
+            sensor.push_back(msg.x);
+            sensor.push_back(msg.y);
+            sensor.push_back(msg.z);
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(sensor_mutex);
-            sensor_data = msg.data;
+            sensor_data = sensor;
         });
         joint1_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT1_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
             // --- Mutex locks for thread-safe updates ---
