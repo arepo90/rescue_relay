@@ -145,12 +145,12 @@ The `mic_port` and `cam_ports` variables tell the program which physical devices
 ## Helpers
 
 - `BasePacket`: Carries all sensor information (that can be stored on the stack) as floats:
-  - Robot orientation (x, y, z angles)
-  - Arm positions (left, right)
-  - Articulation joint angles (1-4)
-  - Track velocities (left, right)
-  - Magnetometer readings (x, y, z axis)
-  - Gas sensor data
+  - Robot orientation in degrees (x, y, z angles)
+  - Flipper angles in degrees (left, right)
+  - Articulation joint angles in degrees (1-4)
+  - Track velocities in meters per second (left, right)
+  - Magnetometer readings in micro Teslas (x, y, z axis)
+  - Gas sensor data in ppm
 - `RTPHeader`: Carries all stream metadata needed for transmission. The first five bitfields (`cc`, `x`, `p`, `version`, `pt`) are not actually used but serve as padding. The other values are:
   - `m`: Marker. Contains the total number of fragments for a given payload (same in all fragments).
   - `seq`: Sequence number. Identifies the current fragment for reassembly.
