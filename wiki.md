@@ -157,6 +157,11 @@ The `mic_port` and `cam_ports` variables tell the program which physical devices
   - `timestamp`: Timestamp. Not actually used in the current implementation.
   - `ssrc`: Synchronization source identifier. Random number unique to each payload (same in all fragments).
 - `PayloadType`: Identifies the stream data types as a byte. Not actually used in the current implementation.
+- `SocketStruct`: A ROTAS channel. Contains the necessary flags, buffers, threads, and helpers to handle an independent two-way connection:
+  - `target_socket`: A pointer to `RTPStreamHandler` that handles the send and recv operations directly.
+  - `_thread`: Send and recv processing threads.
+  - `is_active`: Pause/Resume stream flag.
+  - `is_running`: Startup/Shutdown stream flag.
 
 The `scanPorts()` function runs once on program startup, and its behavior depends on the flag parameter status:
 - **Disabled (default)**: Assumes the data on `cam_ports` is valid and uses it to assemble `cam_info`.
@@ -228,7 +233,7 @@ The main executor and ROS2 node. Is spun up on program startup.
 - `_mutex`: Concurrency control for topic data used to handle get/set operations in different threads.
 - `stream`: PortAudio stream pointer initialized on node startup and bound to `mic_port` as input only.
 - `opus_encoder`: Opus encoder pointer used to compress audio samples for transmission.
-- `_socket`: `SocketStruct` that contains all ROTAS-related variables and objects. Refers to a _channel_.
+- `_socket`: A `SocketStruct` instance that contains all ROTAS-related variables and objects. Refers to a _channel_.
   - `target_socket`: `RTPStreamHandler` object pointer used for data transmission.
   - `_thread`: Send and recv threads for concurrent two-way communication.
   - `is_`: Thread-safe flags to handle thread execution and shutdown.
