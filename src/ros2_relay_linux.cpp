@@ -25,14 +25,18 @@
 #include <errno.h>
 #include <opencv2/opencv.hpp>
 #include <opus/opus.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
 
 // --- Initial settings ---
 #define M_PI 3.14159265358979323846
+#define ESTOP_TOPIC "estop"
 #define IMU_TOPIC "imu_data"
 #define ENCODER_TOPIC "encoder_position"
 #define GAS_TOPIC "mq2_gas"
@@ -51,9 +55,13 @@
 #define VIDEO_HEIGHT 720
 #define MAX_UDP_PACKET_SIZE 65507   // 65507 bytes
 #define FRAGMENTATION_FLAG 0x8000   // RTP header flag
+int exit_code = 0;
 
-std::vector<int> cam_ports = {};
+std::vector<int> cam_ports = {0};
+std::vector<std::string> cam_names = {"Front camera", "Arm camera"};
 int mic_port = -1;
+
+std::vector<std::pair<int, std::string>> cam_info;
 
 struct BasePacket{
     float body_x = 0;
@@ -91,8 +99,41 @@ enum class PayloadType : uint8_t {
     ROS2_ARRAY = 99
 };
 
-void scanPorts(int max_checks = 5){
-
+void scanPorts(bool full_scan = false){
+    std::cout << "[i] Checking video sources...\n";
+    if(full_scan){
+        cam_ports.clear();
+        for(int i = 0; i < 5; i++){
+            cv::VideoCapture cap(i);
+            if(cap.isOpened())
+                cam_ports.push_back(i);
+            cap.release();
+        }
+    }
+    std::cout << "[i] Found " << cam_ports.size() << " video sources on ports { ";
+    for(int i = 0; i < cam_ports.size(); i++){
+        cam_info.push_back(std::make_pair(cam_ports[i], cam_names[i]));
+        std::cout << cam_ports[i] << (i < cam_ports.size()-1 ? ", " : " }\n");
+    }
+    int max_checks = Pa_GetDeviceCount();
+    const PaDeviceInfo* mic_info;
+    std::cout << "[i] Checking " << max_checks << " audio sources...\n";
+    for(int i = 0; i < max_checks; i++) {
+        mic_info = Pa_GetDeviceInfo(i);
+        if(mic_info->maxInputChannels > 0){
+            std::cout << "[i] Found microphone on port " << i << ", name: " << mic_info->name << "\n";
+            if(std::string(mic_info->name) == "default"){
+                mic_port = i;
+                break;
+            }
+        }
+    }
+    if(mic_port == -1){
+        std::cout << "[w] No default microphone found. Assigning port 0\n";
+        mic_port = 0;
+    }
+    else
+        std::cout << "[i] Default microphone found on port " << mic_port << "\n";
 }
 
 // Linux-compatible RTPStreamHandler class
@@ -204,11 +245,12 @@ public:
         if(bytes_received < 0){
             int error = errno;
             if(error != EAGAIN && error != EWOULDBLOCK) 
-                std::cout << "[e] Packet recv failed. Error: " << strerror(error) << "\n";
-            return {};
+                std::cout << "[e] Packet recv failed. Error: " << error << " " << strerror(error) << "\n";
+            return {}; 
         }
         else if(bytes_received <= (int)sizeof(RTPHeader)){
-            std::cout << "[w] Empty packet received\n";
+            if(bytes_received != 0)
+                std::cout << "[w] Empty packet received, size: " << bytes_received << "\n";
             return {};
         }
 
@@ -239,46 +281,74 @@ private:
 class RelayNode : public rclcpp::Node{
 public:
     RelayNode() : Node("relay_node"){
-        // --- Sockets + ROS2 startup ---
-        std::cout << "[i] Starting stream handlers...\n";
+        // --- Full startup ---
+        // -- portaudio --
+        int stderr_backup = -1;
+        int dev_null = -1;
+        fflush(stderr);
+        stderr_backup = dup(STDERR_FILENO);
+        dev_null = open("/dev/null", O_WRONLY);
+        if(dev_null != -1 && stderr_backup != -1){
+            dup2(dev_null, STDERR_FILENO);
+            close(dev_null);
+        }
+        std::cout << "[i] Initializing PortAudio (stderr silenced)...\n";
         Pa_Initialize();
+        if(stderr_backup != -1){
+            fflush(stderr);
+            dup2(stderr_backup, STDERR_FILENO);
+            close(stderr_backup);
+        }
+        std::cout << "[i] Scanning device ports...\n";
+        scanPorts();
+        std::cout << "[i] Starting stream handlers...\n";
         // -- base + audio --
         base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         base_socket.is_recv_running.store(true);
         base_socket.is_send_running.store(true);
+        is_estop_active.store(false);
         audio_socket.is_recv_running.store(true);
         audio_socket.is_send_running.store(true);
         audio_socket.target_socket = new RTPStreamHandler(SERVER_PORT + 2, SERVER_IP, PayloadType::AUDIO_PCM);
         // -- video --
-        for(int i = 0; i < cam_ports.size()+1; i++){
+        for(int i = 0; i < cam_info.size(); i++){
             SocketStruct socket_struct;
             socket_struct.target_socket = new RTPStreamHandler(SERVER_PORT + (2*i) + 4, SERVER_IP, PayloadType::VIDEO_MJPEG);
+            socket_struct.is_recv_running.store(true);
+            socket_struct.is_send_running.store(true);
+            socket_struct.is_active.store(false);
             video_sockets.push_back(std::move(socket_struct));
         }
+        /*
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].is_send_running.store(true);
             video_sockets[i].is_recv_running.store(true);
             video_sockets[i].is_active.store(false);
         }
+        */
 
         // --- Opus + PortAudio startup ---
         int opus_error;
         opus_encoder = opus_encoder_create(AUDIO_SAMPLE_RATE, 1, OPUS_APPLICATION_AUDIO, &opus_error);
         PaStreamParameters stream_params;
-        stream_params.device = mic_ports[0];
+        stream_params.device = mic_port;
         stream_params.channelCount = 1;
         stream_params.sampleFormat = paInt16;
-        stream_params.suggestedLatency = Pa_GetDeviceInfo(mic_ports[0])->defaultLowInputLatency;
+        stream_params.suggestedLatency = Pa_GetDeviceInfo(mic_port)->defaultLowInputLatency;
         stream_params.hostApiSpecificStreamInfo = nullptr;
         Pa_OpenStream(&stream, &stream_params, nullptr, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, paClipOff, audioCallback, this);
-        //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);     // Also initializes audio thread
+        //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);
 
         // --- Threads startup - Program begins ---
         std::cout << "[i] Initializing threads...\n";
         // -- base --
         base_socket.send_thread = std::thread([this](){
+            std_msgs::msg::Bool estop_msg;
+            estop_msg.data = true;
             while(base_socket.is_send_running.load()){
-                std::vector<float> packet(sizeof(BasePacket)/sizeof(float)), orientation, tracks, sensor, joints;
+                if(is_estop_active.load())
+                    estop_publisher->publish(estop_msg);
+                std::vector<float> orientation, tracks, sensor, joints, thermal;
                 float gas, arms;
                 // --- Mutex locks for thread-safe access ---
                 {
@@ -317,6 +387,10 @@ public:
                     std::lock_guard<std::mutex> lock(joint4_mutex);
                     joints.push_back(joint4_data);
                 }
+                {
+                    std::lock_guard<std::mutex> lock(thermal_mutex);
+                    thermal = thermal_data;
+                }
                 if(sensor.empty())
                     sensor = {0, 0, 0};
                 if(orientation.empty())
@@ -325,6 +399,8 @@ public:
                     tracks = {0, 0};
                 if(joints.size() != 4)
                     joints = {0, 0, 0, 0};
+                if(thermal.empty())
+                    thermal = std::vector<float>(64, 0);
 
                 BasePacket base_packet = {
                     orientation[0],
@@ -341,29 +417,48 @@ public:
                     sensor[0],
                     sensor[1],
                     sensor[2],
-                    gas,
+                    gas
                 };
-                std::memcpy(packet.data(), &base_packet, sizeof(BasePacket));
-                packet.insert(packet.begin(), static_cast<float>(cam_ports.size()+1));
+                std::vector<char> packet(sizeof(BasePacket)+sizeof(float)), thermal_encoded(64*sizeof(float));
+                float temp = static_cast<float>(cam_info.size());
+                std::memcpy(packet.data(), &temp, sizeof(float));
+                std::memcpy(packet.data()+sizeof(float), &base_packet, sizeof(BasePacket));
+                for(int i = 0; i < cam_info.size(); i++){
+                    int str_size = cam_info[i].second.length();
+                    std::vector<char> fragment(sizeof(int)+str_size);
+                    std::memcpy(fragment.data(), &str_size, sizeof(int));
+                    std::memcpy(fragment.data()+sizeof(int), cam_info[i].second.data(), str_size);
+                    packet.insert(packet.end(), fragment.begin(), fragment.end());
+                }
+                std::memcpy(thermal_encoded.data(), thermal.data(), 64*sizeof(float));
+                packet.insert(packet.end(), thermal_encoded.begin(), thermal_encoded.end());
                 base_socket.target_socket->sendPacket(packet);
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::this_thread::sleep_for(std::chrono::milliseconds(33));
             }
         });
         base_socket.recv_thread = std::thread([this](){
             while(base_socket.is_recv_running.load()){
                 std::vector<int> data = base_socket.target_socket->recvPacket();
                 if(data.size() == 0 || data[0] != 0) continue;
-                else if(data[1] == 0){
+                else if(data[1] == 0)
                     std::cout << "[i] GUI connected\n";
-                    is_connected.store(true);
-                    audio_socket.is_active.store(false);
-                    for(int i = 0; i < video_sockets.size(); i++){
-                        video_sockets[i].is_active.store(false);
-                    }
-                } 
-                else if(data[1] == -1){
+                else if(data[1] == 1)
                     std::cout << "[i] GUI disconnected\n";
-                    is_connected.store(false);
+                else if(data[1] == -1){
+                    std::cout << "[i] E-Stop called\n";
+                    is_estop_active.store(true);
+                }
+                else if(data[1] == -2){
+                    std::cout << "[i] Restart called\n";
+                    exit_code = 1;
+                    rclcpp::shutdown();
+                    break;
+                }
+                else   
+                    std::cout << "[w] Invalid base packet received\n";
+                audio_socket.is_active.store(false);
+                for(int i = 0; i < video_sockets.size(); i++){
+                    video_sockets[i].is_active.store(false);
                 }
                 // --- Mutex lock for thread-safe updates ---
                 std::lock_guard<std::mutex> lock(gui_mutex);
@@ -385,43 +480,23 @@ public:
         // -- video --
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].send_thread = std::thread([i, this](){
-                cv::VideoCapture cap;
-                if(i < cam_ports.size()){
-                    cap.open(cam_ports[i]);
-                    cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
-                    cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
-                    if(!cap.isOpened()){
-                        std::cout << "[e] Could not open webcam on port " << cam_ports[i] << " for video socket " << i << "\n";
-                        return;
-                    }
-                    std::cout << "[i] Camera on port " << cam_ports[i] << " reserved\n";
+                cv::VideoCapture cap(cam_info[i].first, cv::CAP_V4L2);
+                //if(i < cam_ports.size()){
+                cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+                cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
+                cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
+                if(!cap.isOpened()){
+                    std::cout << "[e] Could not open webcam on port " << cam_info[i].first << " for video socket " << i << "\n";
+                    return;
                 }
+                std::cout << "[i] Camera on port " << cam_info[i].first << " reserved\n";
+                //}
                 cv::Mat frame;
                 std::vector<unsigned char> compressed_data;
                 while(video_sockets[i].is_send_running.load()){
                     if(video_sockets[i].is_active.load()){
                         // --- ~35ms from frame capture to send, works as a frame rate limiter (max ~30 fps) ---
-                        if(i < cam_ports.size())
-                            cap >> frame;
-                        else{
-                            std::vector<float> data;
-                            {
-                                std::lock_guard<std::mutex> lock(thermal_mutex);
-                                data = thermal_data;
-                            }
-                            if(data.size() != 64){
-                                std::cout << "[w] SUBSECTION FILTER THERMAL | Invalid payload: missing pixels\n";
-                                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                                continue;
-                            }
-                            frame = cv::Mat(8, 8, CV_32F);
-                            std::memcpy(frame.data, data.data(), data.size()*sizeof(float));
-                            cv::normalize(frame, frame, 0, 255, cv::NORM_MINMAX);
-                            frame.convertTo(frame, CV_8U);
-                            cv::applyColorMap(frame, frame, cv::COLORMAP_JET);
-                            cv::resize(frame, frame, cv::Size(1920, 1080), cv::INTER_NEAREST);
-                            std::this_thread::sleep_for(std::chrono::milliseconds(35));
-                        }
+                        cap >> frame;
                         if(frame.empty()){
                             std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << "\n";
                             break;
@@ -437,12 +512,13 @@ public:
             video_sockets[i].recv_thread = std::thread([i, this](){
                 while(video_sockets[i].is_recv_running.load()){
                     std::vector<int> data = video_sockets[i].target_socket->recvPacket();
-                    if(data.size() == 0) continue;
+                    if(data.size() <= 1) continue;
                     video_sockets[i].is_active.store(data[1]);
                 }
             });
         }
         // -- ros2 topics --
+        estop_publisher = this->create_publisher<std_msgs::msg::Bool>(ESTOP_TOPIC, 10);
         gas_subscription = this->create_subscription<std_msgs::msg::Float32>(GAS_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(gas_mutex);
@@ -558,11 +634,7 @@ public:
             if(video_sockets[i].recv_thread.joinable()) 
                 video_sockets[i].recv_thread.join();
         }
-        std::cout << "[i] Video channels closed\n";
-        std::cout << "[i] Bye\n";
-    }
-    void destroy(){
-        delete this;
+        std::cout << "[i] Video channels closed\nBye\n";
     }
 private:
     static int audioCallback(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags, void* userData) {
@@ -573,7 +645,9 @@ private:
     int audioProcess(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags){
         // --- Callback runs again after paContinue is returned, so no loop required ---
         if(!audio_socket.is_send_running.load()) return paComplete;
+        audio_socket.is_active.store(true);
         if(!input || !audio_socket.is_active.load()) return paContinue;
+
         // --- Opus encode + send ---
         unsigned char encoded_data[4096];
         int encoded_size = opus_encode(opus_encoder, (const opus_int16*)input, AUDIO_FRAME_SIZE, encoded_data, sizeof(encoded_data));
@@ -621,17 +695,20 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sensor_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_publisher;
     float gas_data = 0;
     float encoder_data = 0;
     float joint1_data = 0;
     float joint2_data = 0;
     float joint3_data = 0;
     float joint4_data = 0;
+    bool estop_data = false;
     std::vector<float> imu_data = {};
     std::vector<float> thermal_data = {};
     std::vector<float> track_data = {};
     std::vector<float> sensor_data = {};
     std::vector<int> gui_data = {};
+    std::mutex estop_mutex;
     std::mutex imu_mutex;
     std::mutex gas_mutex;
     std::mutex thermal_mutex;
@@ -643,21 +720,21 @@ private:
     std::mutex joint2_mutex;
     std::mutex joint3_mutex;
     std::mutex joint4_mutex;
+    std::atomic<bool> is_estop_active;
     PaStream* stream;
     PaError err;
     OpusEncoder* opus_encoder;
     SocketStruct audio_socket;
     SocketStruct base_socket;
     std::vector<SocketStruct> video_sockets;
-    std::atomic<bool> is_connected;
 };
 
 int main(int argc, char** argv){
-    std::cout << "[i] Hi Windows\n";
+    std::cout << "[i] Hi Linux\n";
     // --- RelayNode handles everything ---
     rclcpp::init(argc, argv);
     auto node = std::make_shared<RelayNode>();
     rclcpp::spin(node);
     rclcpp::shutdown();
-    return 0;
+    return exit_code;
 }
