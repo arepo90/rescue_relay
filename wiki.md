@@ -1,6 +1,6 @@
-> LAST UPDATE: MAY 21
+> LAST UPDATE: June 9
 
-> THERE **WILL** BE CHANGES
+> THERE **WILL** BE MORE CHANGES
 
 # Wiki
 
@@ -17,8 +17,9 @@ In general, different conventions are used to refer to different concepts:
 
 ## Terminology
 
-- A **setting** is the initial state of a variable that alters the functioning of a function or the program as a whole, although it's not altered nor modified. 
+- A **setting** is the initial state of a variable that alters the inner workings of a function or the program as a whole; it can't be altered or modified after startup. 
 - A **channel** is an instance of `SocketStruct`, and refers to an object capable of handling two-way data transmission through ROTAS.
+- A **marker** is a numerical variable indicating a specific instruction or state.
 - A **payload** is the relevant data or information sent inside a packet.
 - A **packet** is an entire data structure meant for transmission. Contains a header and one or more payloads.
 - A **header** is a data structure that contains metadata about the rest of the payload, generally placed at the beginning of the packet.
@@ -26,8 +27,8 @@ In general, different conventions are used to refer to different concepts:
 - A **network port** is a virtual point where a connection starts and/or ends. A socket needs to point to a particular port on any given IP address.
 - A **USB port** is a virtual index refering to a physical device connected through USB.
 - A **declaration** is the act of creating a variable, object, etc., but not giving it any initial state. 
-- An **initialization** is the act of assigning an initial state to a variable, object, etc.
-- A **flag** is a boolean or _std::atomic&lt;bool&gt;_ variable that allows a processing loop to be executed (activated = set as _true_, deactivated = set as _false_). The `is_running` flags are activated once on startup and deactivated on shutdown to end all threads, while the `is_active` flags may change throughout the program's execution and serve as a _pause_ or _resume_ indicator.
+- An **initialization** is the act of assigning an initial state to a variable, object, etc., or starting the base functions of an external library.
+- A **flag** is a boolean or _std::atomic&lt;bool&gt;_ variable that allows a processing loop to be executed (activated = _true_, deactivated = _false_). The `is_running` flags are activated once on startup and deactivated on shutdown to end all threads, while the `is_active` flags may change throughout the program's execution and serve as a _pause_ or _resume_ indicator.
 - **send** refers to all variables, objects, processes, and threads that handle communication from the relay to the GUI.
 - **recv** refers to all variables, objects, processes, and threads that handle communication from the GUI to the relay.
 
@@ -41,11 +42,11 @@ They are, in increasing order of severity:
 - **Error `[e]`**: Fatal errors that end the program's execution or edge cases due to improper shutdown.
 
 > [!TIP]
-> The mosts important log messages to watch out for are `[i] Setup done` (program started correctly and is awaiting a connection), `[i] GUI connected` (connection to the GUI has been established and streams should be able to start), `[i] GUI disconnected` (GUI was closed and the program is awaiting a new connetion).
+> The mosts important log messages to watch out for are `[i] Setup done` (program started correctly and is awaiting a connection), `[i] GUI connected` (connection to the GUI has been established and streams should be able to start), and `[i] GUI disconnected` (GUI was closed and the program is awaiting a new connetion).
 
 ## Overview
 
-`rescue_relay` is a rclcpp package, and as such, it is built using colcon and ran using ROS2. It serves as a middleman or _relay_ between the robot's sensor data on the microcontrollers and the GUI program on the remote workstation.
+`rescue_relay` is a rclcpp package, and as such, it is built using colcon and ran using ROS2. It serves as a middleman or _relay_ between the robot's sensor data on the microcontrollers and the GUI program on the remote workstation. For reliability purposes, the proper way to start the relay is through its launch file, which simply calls the executable with the _respawn_ setting activated, that is, it will restart automatically after any crashes or unexpected errors. 
 
 > [!NOTE]
 > With the exception of network sockets, all functions and libraries are cross-platform. The only differences between `ros2_relay.cpp` and `ros2_relay_linux.cpp` are the `#include` headers and the socket implementations inside the _RTPStreamHandler_ class. The OS is automatically detected by CMake during build, so the executable is always called as `relay` regardless of the platform. 
@@ -60,7 +61,7 @@ On startup, the program performs the following actions:
 
 It should be noted that audio and video streaming do **not** start immediately after a connection is established; their send threads start with their `is_active` flag deactivated, so their loops wait for a while and skip to the next iteration. It is only after a packet is received and the flag is activated that the actual send logic can be processed.
 
-The GUI is designed to give a notification once when it starts and once again when it shuts down, but the relay itself is not supposed to shut down under any circumstances (unless a fatal error appears). As such, when the GUI disconnects, the relay enters a standby mode while it awaits a new connection.
+The GUI is designed to give a notification once when it starts and once again when it shuts down, but the relay itself is not supposed to shut down ever (unless a fatal error appears or a restart is called by the GUI). As such, when the GUI disconnects, the relay enters a standby mode while it awaits a new connection.
 
 ### Base channel
 
@@ -86,7 +87,7 @@ The GUI is designed to give a notification once when it starts and once again wh
   3. Pause/Resume PortAudio stream (according to the flag received).
 
 > [!NOTE]
-> While a deactivated `is_active` flag should skip the execution and prevent audio recording when not needed, PortAudio holds an internal buffer and works in magical and mysterious ways, so manually calling `Pa_StopStream(stream)` to pause and `Pa_StartStream(stream)` to resume is also needed.
+> While a deactivated `is_active` flag **should** skip the function execution and prevent audio recording when not needed, PortAudio continues to work in magical and mysterious ways (i.e. no idea how or why its internal buffer keeps getting updated), so manually calling `Pa_StopStream(stream)` to pause and `Pa_StartStream(stream)` to resume is also needed.
  
 ### Video channels
 
@@ -105,6 +106,8 @@ The GUI is designed to give a notification once when it starts and once again wh
 
 All preprocessor definitions ending in `_TOPIC` refer to topic subscriptions, with the default ones being:
 
+#### Data input
+
 | Topic name          | Type                             | Description                     |
 |---------------------|----------------------------------|---------------------------------|
 | `/imu_data`         | `sensor_msgs/msg/Imu`            | BNO055 sensor data              |
@@ -118,7 +121,14 @@ All preprocessor definitions ending in `_TOPIC` refer to topic subscriptions, wi
 | `/joint_elbow`      | `std_msgs/msg/Float32`           | Arm elbow joint angle           |
 | `/joint_hand`       | `std_msgs/msg/Float32`           | Arm gripper angle               |
 
-While topic names propagate, more complex settings like data types and callback functions must be modified in the _RelayNode_ class.
+#### Data output
+
+| Topic name | Type                | Description            |
+|------------|---------------------|------------------------|
+| `/estop`   | `std_msgs/msg/Bool` | Virtual E-Stop message |
+
+> [!NOTE]
+> While topic names propagate, more complex settings like data types and callback functions must be modified in the _RelayNode_ class.
 
 ### ROTAS
 
@@ -172,7 +182,7 @@ The `scanPorts()` function runs once on program startup, and its behavior depend
 - **Enabled**: Disregards `cam_ports` and instead checks the first five USB ports. Any available device is then added to `cam_info` and anounced through an `[i]` message.
 
 > [!NOTE]
-> PortAudio only supports one audio stream at a time. Should an appropiate port not be found after the scan, the port will default to 0.
+> PortAudio only supports one audio stream at a time. Should an appropiate port not be found after the scan, the microphone port will default to 0.
 
 ## RTPStreamHandler
 
@@ -182,8 +192,8 @@ The ROTAS stream. Serves as a universal handler for two-way communication of **a
 
 - `Stream`: A helper struct that stores the stream information. Not actually used in the current implementation.
 - Sockets:
-  - `SOCKET`: Send and recv socket objects.
-  - `sockaddr_in`: Send and recv socket addresses. Bound to the GUI's ip address and two contiguous ports.
+  - `_socket`: Send and recv socket objects.
+  - `_socket_address`: Send and recv socket addresses. Bound to the GUI's ip address and two contiguous ports.
   - `socket_address_size`: Helper variable for `sendto()` and `recvfrom()` socket methods.
 
 ### Constructor
@@ -203,7 +213,7 @@ An initial port, the target ip address, and the payload type are passed as param
 
 ### destroy()
 
-The actual destructor isn't (and shouldn't) be called as a method. This function serves as an intermediary.
+The actual destructor isn't (and shouldn't be) called as a method. This function serves as an intermediary.
 
 ### sendPacket()
 
@@ -224,7 +234,7 @@ Currently only supports non-fragmented packets (large packets are not actually n
 3. Payload is parsed as a _std::vector&lt;int&gt;_ and returned (header is disregarded).
 
 > [!NOTE]
-> Communication from the GUI to the relay is simple and short, generally consisting of a few flags and indicators; as such, the full implementation of ROTAS is not needed on this side.
+> Communication from the GUI to the relay is simple and short, generally consisting of a few flags and markers; as such, the full implementation of ROTAS is not needed on the recv side.
 
 ## RelayNode
 
@@ -244,11 +254,13 @@ The main executor and ROS2 node. Is spun up on program startup.
  
 ### Constructor
 
-1. Initializes the base, audio, and stream channels by creating `RTPStreamHandler` instances with the corresponding ports, and setting up the execution flags.
-2. Starts the Opus encoder and the PortAudio stream, which starts a recurring audio callback:
+1. Initializes PortAudio with output messages silenced (Several information and warning logs appear otherwise, but are irrelevant to what is actually used).
+2. Runs `scanPorts()` function. 
+3. Initializes the base, audio, and stream channels by creating `RTPStreamHandler` instances with the corresponding ports, and setting up the execution flags.
+4. Starts the Opus encoder and the PortAudio stream, which starts a recurring audio callback:
    1. If the stream is active, encodes the current audio sample using Opus and sends it through the audio channel.
    2. Otherwise, awaits the active flag.
-4. Initializes the base channel send thread, which runs in a loop for the program's lifetime:
+5. Initializes the base channel send thread, which runs in a loop for the program's lifetime:
    1. Copies ROS2 topic data from the internal buffers using _std::lock_guards_ with their corresponding _std::mutex_. 
    2. Fills empty buffers with 0's to prevent out-of-bounds errors.
    3. Creates a `BasePacket` instance and fills it with the topic data.
@@ -257,23 +269,28 @@ The main executor and ROS2 node. Is spun up on program startup.
    6. For every video source, appends the name string length and string itself to the payload (for easier reconstruction on GUI).
    7. Appends the thermal sensor data to the payload.
    8. Sends the payload through the base channel.
-5. Initializes the base channel recv thread, which runs in a loop for the program's lifetime (more in-depth explanation in the note):
-   1.  Awaits a packet from the base channel.
-   2.  Expects a `0` or `1` marker, indicating the GUI connected or disconnected, respectively.
-   3.  Pauses the audio and video streams.
-   4.  Copies the full payload to the internal buffer.
-5. Initializes the audio channel recv thread, which runs in a loop for the program's lifetime:
+6. Initializes the base channel recv thread, which runs in a loop for the program's lifetime (more in-depth explanation in the note):
+   1. Awaits a packet from the base channel.
+   2. Expects a _marker_ number, indicating the following:
+      - 0: GUI connected
+      - 1: GUI disconnected
+      - -1: GUI called virtual E-Stop (publishes `true` on `/estop` topic).
+      - -2: GUI called restart (shuts down program and exits with code 1).
+   4. Pauses the audio and video streams.
+   5. Copies the full payload to the internal buffer.
+7. Initializes the audio channel recv thread, which runs in a loop for the program's lifetime:
    1. Awaits a packet from the audio channel.
    2. Expects a `0` or `1` marker, indicating a pause or resume to the audio stream, respectively.
-6. For every video channel, initializes the send thread, which runs in a loop for the program's lifetime:
+8. For every video channel, initializes the send thread, which runs in a loop for the program's lifetime:
    1. Creates a _cv::VideoCapture_ instance bound to the corresponding USB port, and assigns the relevant image settings.
    2. If the stream is active, captures a frame, encodes it using jpeg, and sends it through the corresponding video channel.
    3. Otherwise, awaits the active flag.
-7. For every video channel, initializes the recv thread, which runs in a loop for the program's lifetime:
+9. For every video channel, initializes the recv thread, which runs in a loop for the program's lifetime:
    1. Awaits a paket from the corresponding video channel.
    2. Expects a `0` or `1` marker, indicating a pause or resume to the video stream, respectively.
-8. For every ROS2 topic, creates a subscription with a callback function that stores the relevant data in the internal buffers.
-9. Finishes with an `[i]` message (_Setup done_).
+10. For every ROS2 input topic, creates a subscription with a callback function that stores the relevant data in the internal buffers.
+11. Creates a ROS2 publisher for the virtual E-Stop, called only by the base channel.
+12. Finishes with an `[i]` message (_Setup done_).
 
 > [!NOTE]
 > The base channel recv thread works on the assumption that all relevant communication from the GUI will be handled by the corresponding channels, and that the base channel is only used once when the GUI starts, and once again when it shuts down. As such, both cases imply a hard reset which is why the audio and video streams are paused regardless of the GUI's state. 
@@ -301,11 +318,9 @@ Contains the logic needed for the audio stream. Is called recursively after `PaC
 ## main()
 
 1. Anounces the call with an `[i]` message (_Hi [Windows/Linux]_).
-2. Initializes PortAudio (required for port scans).
-3. Runs `scanPorts()`.
-4. Initializes ROS2.
-5. Initializes the `RelayNode` node.
-6. On shutdown, closes ROS2.
+2. Initializes ROS2.
+3. Initializes the `RelayNode` node.
+4. On proper shutdown, closes ROS2 and returns 0; otherwise returns `exit_code`.
 
 > [!TIP]
 > The program may sometimes hang after the initial `[i]` message, indicating `rclcpp` is having some trouble starting up. This is generally fixed by waiting for a few seconds or rebuilding the package, so long as no actual error message is shown.
