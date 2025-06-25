@@ -30,12 +30,14 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
+#include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
 
 // --- Initial settings ---
 #define M_PI 3.14159265358979323846
+#define SETTINGS_TOPIC "settings"
 #define ESTOP_TOPIC "estop"
 #define IMU_TOPIC "imu_data"
 #define ENCODER_TOPIC "encoder_position"
@@ -152,7 +154,7 @@ public:
         // -- send --
         send_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (send_socket < 0) {
-            std::cout << "[e] Failed to create send socket: " << strerror(errno) << std::endl;
+            std::cout << "[e] Failed to create send socket. Error: " << errno << "\n";
             return;
         }
         
@@ -164,7 +166,7 @@ public:
         // -- recv --  
         recv_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (recv_socket < 0) {
-            std::cout << "[e] Failed to create recv socket: " << strerror(errno) << std::endl;
+            std::cout << "[e] Failed to create recv socket. Error: " << errno << "\n";
             return;
         }
         
@@ -177,7 +179,7 @@ public:
         recv_socket_address.sin_addr.s_addr = INADDR_ANY;
         
         if (bind(recv_socket, (struct sockaddr*)&recv_socket_address, socket_address_size) < 0) {
-            std::cout << "[e] Failed to bind recv socket: " << strerror(errno) << std::endl;
+            std::cout << "[e] Failed to bind recv socket. Error: " << errno << "\n";
             return;
         }
 
@@ -233,7 +235,9 @@ public:
             */
 
             if(sendto(send_socket, (const char*)packet.data(), packet.size(), 0, (struct sockaddr*)&send_socket_address, socket_address_size) < 0){
-                std::cout << "[w] Packet send failed on fragment " << i << ". Error: " << strerror(errno) << "\n";
+                int error = errno;
+                if(error == 9) return;
+                std::cout << "[w] Packet send failed on fragment " << i << ". Error: " << error << "\n";
             }
         } 
     }
@@ -245,7 +249,7 @@ public:
         if(bytes_received < 0){
             int error = errno;
             if(error != EAGAIN && error != EWOULDBLOCK) 
-                std::cout << "[e] Packet recv failed. Error: " << error << " " << strerror(error) << "\n";
+                std::cout << "[e] Packet recv failed. Error: " << error << "\n";
             return {}; 
         }
         else if(bytes_received <= (int)sizeof(RTPHeader)){
@@ -300,7 +304,7 @@ public:
             close(stderr_backup);
         }
         std::cout << "[i] Scanning device ports...\n";
-        scanPorts();
+        scanPorts(true);
         std::cout << "[i] Starting stream handlers...\n";
         // -- base + audio --
         base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
@@ -345,9 +349,12 @@ public:
         base_socket.send_thread = std::thread([this](){
             std_msgs::msg::Bool estop_msg;
             estop_msg.data = true;
+            //std_msgs::msg::Int32MultiArray settings_msg;
+            //settings_msg.data = {};
             while(base_socket.is_send_running.load()){
                 if(is_estop_active.load())
                     estop_publisher->publish(estop_msg);
+                //settings_publisher->publish(settings_msg);
                 std::vector<float> orientation, tracks, sensor, joints, thermal;
                 float gas, arms;
                 // --- Mutex locks for thread-safe access ---
@@ -456,9 +463,11 @@ public:
                 }
                 else   
                     std::cout << "[w] Invalid base packet received\n";
-                audio_socket.is_active.store(false);
-                for(int i = 0; i < video_sockets.size(); i++){
-                    video_sockets[i].is_active.store(false);
+                if(data[1] != 2){
+                    audio_socket.is_active.store(false);
+                    for(int i = 0; i < video_sockets.size(); i++){
+                        video_sockets[i].is_active.store(false);
+                    }
                 }
                 // --- Mutex lock for thread-safe updates ---
                 std::lock_guard<std::mutex> lock(gui_mutex);
@@ -634,7 +643,7 @@ public:
             if(video_sockets[i].recv_thread.joinable()) 
                 video_sockets[i].recv_thread.join();
         }
-        std::cout << "[i] Video channels closed\nBye\n";
+        std::cout << "[i] Video channels closed\n[i] Bye\n";
     }
 private:
     static int audioCallback(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags, void* userData) {
@@ -696,6 +705,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sensor_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_publisher;
+    rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr settings_publisher;
     float gas_data = 0;
     float encoder_data = 0;
     float joint1_data = 0;
