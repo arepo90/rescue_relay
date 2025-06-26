@@ -26,7 +26,7 @@ grep -q "alias stop=" ~/.bashrc || echo 'alias stop="pkill -9 -f \"relay\""' >> 
 grep -q "alias relay=" ~/.bashrc || echo 'alias relay="cd ~/ros2_ws && source ./install/setup.bash && ros2 launch rescue_relay launch.py"' >> $HOME/.bashrc
 grep -q "alias runrelay=" ~/.bashrc || echo 'alias runrelay="cd ~/ros2_ws && source ./install/setup.bash && ros2 run rescue_relay relay"' >> $HOME/.bashrc
 grep -q "alias topics=" ~/.bashrc || echo 'alias topics="cd ~/ros2_ws && source ./install/setup.bash && ros2 topic list"' >> $HOME/.bashrc
-grep -q "alias estop=" ~/.bashrc || echo 'alias estop="ros2 topic pub /estop std_msgs/Bool \"data: true\" --once' >> $HOME/.bashrc
+grep -q "alias estop=" ~/.bashrc || echo 'alias estop="ros2 topic pub /estop std_msgs/Bool \"data: true\" --once"' >> $HOME/.bashrc
 
 echo "[4/4] Finalizing..."
 source $HOME/.bashrc
