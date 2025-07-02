@@ -32,18 +32,20 @@
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "sensor_msgs/msg/joy.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
 
 // --- Initial settings ---
 #define M_PI 3.14159265358979323846
+#define CONTROLLER_TOPIC "joy"
 #define SETTINGS_TOPIC "settings"
 #define ESTOP_TOPIC "estop"
 #define IMU_TOPIC "imu_data"
 #define ENCODER_TOPIC "encoder_position"
 #define GAS_TOPIC "mq2_gas"
 #define TRACK_TOPIC "track_velocity"
-#define THERMAL_TOPIC "thermal_image" 
+#define THERMAL_TOPIC "thermal_image"
 #define SENSOR_TOPIC "magnetometer"
 #define JOINT1_TOPIC "joint_base"
 #define JOINT2_TOPIC "joint_shouler"
@@ -308,20 +310,23 @@ public:
         scanPorts(true);
         std::cout << "[i] Starting stream handlers..." << std::endl;
         // -- base + audio --
-        base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         base_socket.is_recv_running.store(true);
         base_socket.is_send_running.store(true);
-        is_estop_active.store(false);
+        base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         audio_socket.is_recv_running.store(true);
         audio_socket.is_send_running.store(true);
         audio_socket.target_socket = new RTPStreamHandler(SERVER_PORT + 2, SERVER_IP, PayloadType::AUDIO_PCM);
+        // -- controller --
+        controller_socket.is_recv_running.store(true);
+        controller_socket.is_send_running.store(false);
+        controller_socket.target_socket = new RTPStreamHandler(SERVER_PORT + 4, SERVER_IP, PayloadType::ROS2_ARRAY);
         // -- video --
         for(int i = 0; i < cam_info.size(); i++){
             SocketStruct socket_struct;
-            socket_struct.target_socket = new RTPStreamHandler(SERVER_PORT + (2*i) + 4, SERVER_IP, PayloadType::VIDEO_MJPEG);
             socket_struct.is_recv_running.store(true);
             socket_struct.is_send_running.store(true);
             socket_struct.is_active.store(false);
+            socket_struct.target_socket = new RTPStreamHandler(SERVER_PORT + (2*i) + 6, SERVER_IP, PayloadType::VIDEO_MJPEG);
             video_sockets.push_back(std::move(socket_struct));
         }
         /*
@@ -344,17 +349,40 @@ public:
         Pa_OpenStream(&stream, &stream_params, nullptr, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, paClipOff, audioCallback, this);
         //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);
 
+        // --- ros2 publishers ---
+        estop_publisher = this->create_publisher<std_msgs::msg::Bool>(ESTOP_TOPIC, 10);
+        controller_publisher = this->create_publisher<sensor_msgs::msg::Joy>(CONTROLLER_TOPIC, 10);
+
         // --- Threads startup - Program begins ---
         std::cout << "[i] Initializing threads..." << std::endl;
+
+        // -- controller --
+        controller_socket.recv_thread = std::thread([this](){
+            while(controller_socket.is_recv_running.load()){
+                std::vector<int> data = controller_socket.target_socket->recvPacket();
+                if(data.size() != 20) continue;
+                std::vector<float> axes;
+                std::vector<int> buttons(data.end()-14, data.end());
+                for(int i = 0; i < 6; i++){
+                    if(i < 4) 
+                        axes.push_back(float(data[i]) / 255.0);
+                    else
+                        axes.push_back((float(data[i])/255.0) * 2.0 - 1.0);
+                }
+                sensor_msgs::msg::Joy msg;
+                msg.header.stamp = this->now();
+                msg.header.frame_id = "joy_frame";
+                msg.axes = axes;
+                msg.buttons = buttons;
+                controller_publisher->publish(msg);
+            }
+        });
+
         // -- base --
         base_socket.send_thread = std::thread([this](){
-            std_msgs::msg::Bool estop_msg;
-            estop_msg.data = true;
             //std_msgs::msg::Int32MultiArray settings_msg;
             //settings_msg.data = {};
             while(base_socket.is_send_running.load()){
-                if(is_estop_active.load())
-                    estop_publisher->publish(estop_msg);
                 //settings_publisher->publish(settings_msg);
                 std::vector<float> orientation, tracks, sensor, joints, thermal;
                 float gas, arms;
@@ -454,7 +482,9 @@ public:
                     std::cout << "[i] GUI disconnected" << std::endl;
                 else if(data[1] == -1){
                     std::cout << "[i] E-Stop called" << std::endl;
-                    is_estop_active.store(true);
+                    std_msgs::msg::Bool estop_msg;
+                    estop_msg.data = true;
+                    estop_publisher->publish(estop_msg);
                 }
                 else if(data[1] == -2){
                     std::cout << "[i] Restart called" << std::endl;
@@ -462,7 +492,7 @@ public:
                     rclcpp::shutdown();
                     break;
                 }
-                else   
+                else if(data[1] != 2) 
                     std::cout << "[w] Invalid base packet received" << std::endl;
                 if(data[1] != 2){
                     audio_socket.is_active.store(false);
@@ -527,8 +557,7 @@ public:
                 }
             });
         }
-        // -- ros2 topics --
-        estop_publisher = this->create_publisher<std_msgs::msg::Bool>(ESTOP_TOPIC, 10);
+        // -- ros2 subscribers --
         gas_subscription = this->create_subscription<std_msgs::msg::Float32>(GAS_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
             // --- Mutex locks for thread-safe updates ---
             std::lock_guard<std::mutex> lock(gas_mutex);
@@ -613,6 +642,7 @@ public:
         audio_socket.is_send_running.store(false);
         base_socket.is_recv_running.store(false);
         base_socket.is_send_running.store(false);
+        controller_socket.is_recv_running.store(false);
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].is_active.store(false);
             video_sockets[i].is_recv_running.store(false);
@@ -636,6 +666,11 @@ public:
         if(base_socket.recv_thread.joinable()) 
             base_socket.recv_thread.join();
         std::cout << "[i] Base channel closed" << std::endl;
+        // -- controller --
+        controller_socket.target_socket->destroy();
+        if(controller_socket.recv_thread.joinable())
+            controller_socket.recv_thread.join();
+        std::cout << "[i] Controller channel closed" << std::endl;
         // -- video --
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].target_socket->destroy();
@@ -707,6 +742,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_publisher;
     rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr settings_publisher;
+    rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr controller_publisher;
     float gas_data = 0;
     float encoder_data = 0;
     float joint1_data = 0;
@@ -718,6 +754,7 @@ private:
     std::vector<float> thermal_data = {};
     std::vector<float> track_data = {};
     std::vector<float> sensor_data = {};
+    std::vector<int> controller_data = {};
     std::vector<int> gui_data = {};
     std::mutex estop_mutex;
     std::mutex imu_mutex;
@@ -731,12 +768,12 @@ private:
     std::mutex joint2_mutex;
     std::mutex joint3_mutex;
     std::mutex joint4_mutex;
-    std::atomic<bool> is_estop_active;
     PaStream* stream;
     PaError err;
     OpusEncoder* opus_encoder;
     SocketStruct audio_socket;
     SocketStruct base_socket;
+    SocketStruct controller_socket;
     std::vector<SocketStruct> video_sockets;
 };
 
