@@ -49,7 +49,7 @@
 #define JOINT2_TOPIC "joint_shouler"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "192.168.0.131"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
@@ -60,7 +60,7 @@
 int exit_code = 0;
 
 std::vector<int> cam_ports = {0};
-std::vector<std::string> cam_names = {"Front camera", "Arm camera"};
+std::vector<std::string> cam_names = {"aaaa", "bbbb", "cccc", "dddd", "eeeee"};
 int mic_port = -1;
 
 std::vector<std::pair<int, std::string>> cam_info;
@@ -102,7 +102,7 @@ enum class PayloadType : uint8_t {
 };
 
 void scanPorts(bool full_scan = false){
-    std::cout << "[i] Checking video sources...\n";
+    std::cout << "[i] Checking video sources..." << std::endl;
     if(full_scan){
         cam_ports.clear();
         for(int i = 0; i < 5; i++){
@@ -115,15 +115,15 @@ void scanPorts(bool full_scan = false){
     std::cout << "[i] Found " << cam_ports.size() << " video sources on ports { ";
     for(int i = 0; i < cam_ports.size(); i++){
         cam_info.push_back(std::make_pair(cam_ports[i], cam_names[i]));
-        std::cout << cam_ports[i] << (i < cam_ports.size()-1 ? ", " : " }\n");
+        std::cout << cam_ports[i] << (i < cam_ports.size()-1 ? ", " : " }\n") << std::flush;
     }
     int max_checks = Pa_GetDeviceCount();
     const PaDeviceInfo* mic_info;
-    std::cout << "[i] Checking " << max_checks << " audio sources...\n";
+    std::cout << "[i] Checking " << max_checks << " audio sources..." << std::endl;
     for(int i = 0; i < max_checks; i++) {
         mic_info = Pa_GetDeviceInfo(i);
         if(mic_info->maxInputChannels > 0){
-            std::cout << "[i] Found microphone on port " << i << ", name: " << mic_info->name << "\n";
+            std::cout << "[i] Found microphone on port " << i << ", name: " << mic_info->name << std::endl;
             if(std::string(mic_info->name) == "default"){
                 mic_port = i;
                 break;
@@ -131,11 +131,11 @@ void scanPorts(bool full_scan = false){
         }
     }
     if(mic_port == -1){
-        std::cout << "[w] No default microphone found. Assigning port 0\n";
+        std::cout << "[w] No default microphone found. Assigning port 0" << std::endl;
         mic_port = 0;
     }
     else
-        std::cout << "[i] Default microphone found on port " << mic_port << "\n";
+        std::cout << "[i] Default microphone found on port " << mic_port << std::endl;
 }
 
 // Linux-compatible RTPStreamHandler class
@@ -154,7 +154,7 @@ public:
         // -- send --
         send_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (send_socket < 0) {
-            std::cout << "[e] Failed to create send socket. Error: " << errno << "\n";
+            std::cout << "[e] Failed to create send socket. Error: " << errno << std::endl;
             return;
         }
         
@@ -166,7 +166,7 @@ public:
         // -- recv --  
         recv_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (recv_socket < 0) {
-            std::cout << "[e] Failed to create recv socket. Error: " << errno << "\n";
+            std::cout << "[e] Failed to create recv socket. Error: " << errno << std::endl;
             return;
         }
         
@@ -179,15 +179,15 @@ public:
         recv_socket_address.sin_addr.s_addr = INADDR_ANY;
         
         if (bind(recv_socket, (struct sockaddr*)&recv_socket_address, socket_address_size) < 0) {
-            std::cout << "[e] Failed to bind recv socket. Error: " << errno << "\n";
+            std::cout << "[e] Failed to bind recv socket. Error: " << errno << std::endl;
             return;
         }
 
-        std::cout << "[i] Channel created, bound to ports (" << port << ", " << port + 1 << ")\n";
+        std::cout << "[i] Channel created, bound to ports (" << port << ", " << port + 1 << ")" << std::endl;
     }
     
     ~RTPStreamHandler(){
-        std::cout << "[i] Closing channel (" << stream->port << ", " << stream->port + 1 << ")\n";
+        std::cout << "[i] Closing channel (" << stream->port << ", " << stream->port + 1 << ")" << std::endl;
         shutdown(recv_socket, SHUT_RDWR);
         close(send_socket);
         close(recv_socket);
@@ -237,7 +237,7 @@ public:
             if(sendto(send_socket, (const char*)packet.data(), packet.size(), 0, (struct sockaddr*)&send_socket_address, socket_address_size) < 0){
                 int error = errno;
                 if(error == 9) return;
-                std::cout << "[w] Packet send failed on fragment " << i << ". Error: " << error << "\n";
+                std::cout << "[w] Packet send failed on fragment " << i << ". Error: " << error << std::endl;
             }
         } 
     }
@@ -249,12 +249,12 @@ public:
         if(bytes_received < 0){
             int error = errno;
             if(error != EAGAIN && error != EWOULDBLOCK) 
-                std::cout << "[e] Packet recv failed. Error: " << error << "\n";
+                std::cout << "[e] Packet recv failed. Error: " << error << std::endl;
             return {}; 
         }
         else if(bytes_received <= (int)sizeof(RTPHeader)){
             if(bytes_received != 0)
-                std::cout << "[w] Empty packet received, size: " << bytes_received << "\n";
+                std::cout << "[w] Empty packet received, size: " << bytes_received << std::endl;
             return {};
         }
 
@@ -296,16 +296,17 @@ public:
             dup2(dev_null, STDERR_FILENO);
             close(dev_null);
         }
-        std::cout << "[i] Initializing PortAudio (stderr silenced)...\n";
+        std::cout << "[i] Initializing PortAudio (stderr silenced)..." << std::endl;
+
         Pa_Initialize();
         if(stderr_backup != -1){
             fflush(stderr);
             dup2(stderr_backup, STDERR_FILENO);
             close(stderr_backup);
         }
-        std::cout << "[i] Scanning device ports...\n";
+        std::cout << "[i] Scanning device ports..." << std::endl;
         scanPorts(true);
-        std::cout << "[i] Starting stream handlers...\n";
+        std::cout << "[i] Starting stream handlers..." << std::endl;
         // -- base + audio --
         base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         base_socket.is_recv_running.store(true);
@@ -344,7 +345,7 @@ public:
         //Pa_OpenDefaultStream(&stream, 1, 0, paInt16, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, audioCallback, this);
 
         // --- Threads startup - Program begins ---
-        std::cout << "[i] Initializing threads...\n";
+        std::cout << "[i] Initializing threads..." << std::endl;
         // -- base --
         base_socket.send_thread = std::thread([this](){
             std_msgs::msg::Bool estop_msg;
@@ -448,21 +449,21 @@ public:
                 std::vector<int> data = base_socket.target_socket->recvPacket();
                 if(data.size() == 0 || data[0] != 0) continue;
                 else if(data[1] == 0)
-                    std::cout << "[i] GUI connected\n";
+                    std::cout << "[i] GUI connected" << std::endl;
                 else if(data[1] == 1)
-                    std::cout << "[i] GUI disconnected\n";
+                    std::cout << "[i] GUI disconnected" << std::endl;
                 else if(data[1] == -1){
-                    std::cout << "[i] E-Stop called\n";
+                    std::cout << "[i] E-Stop called" << std::endl;
                     is_estop_active.store(true);
                 }
                 else if(data[1] == -2){
-                    std::cout << "[i] Restart called\n";
+                    std::cout << "[i] Restart called" << std::endl;
                     exit_code = 1;
                     rclcpp::shutdown();
                     break;
                 }
                 else   
-                    std::cout << "[w] Invalid base packet received\n";
+                    std::cout << "[w] Invalid base packet received" << std::endl;
                 if(data[1] != 2){
                     audio_socket.is_active.store(false);
                     for(int i = 0; i < video_sockets.size(); i++){
@@ -495,10 +496,10 @@ public:
                 cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
                 cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
                 if(!cap.isOpened()){
-                    std::cout << "[e] Could not open webcam on port " << cam_info[i].first << " for video socket " << i << "\n";
+                    std::cout << "[e] Could not open webcam on port " << cam_info[i].first << " for video socket " << i << std::endl;
                     return;
                 }
-                std::cout << "[i] Camera on port " << cam_info[i].first << " reserved\n";
+                std::cout << "[i] Camera on port " << cam_info[i].first << " reserved" << std::endl;
                 //}
                 cv::Mat frame;
                 std::vector<unsigned char> compressed_data;
@@ -507,7 +508,7 @@ public:
                         // --- ~35ms from frame capture to send, works as a frame rate limiter (max ~30 fps) ---
                         cap >> frame;
                         if(frame.empty()){
-                            std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << "\n";
+                            std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << std::endl;
                             break;
                         }
                         cv::imencode(".jpg", frame, compressed_data, {cv::IMWRITE_JPEG_QUALITY, 40});
@@ -602,11 +603,11 @@ public:
             std::lock_guard<std::mutex> lock(joint4_mutex);
             joint4_data = msg.data;
         });
-        std::cout << "[i] Setup done\n";
+        std::cout << "[i] Setup done" << std::endl;
     }
     ~RelayNode(){
         // --- Stop & join threads + destroy objects ---
-        std::cout << "[i] Closing program...\n";
+        std::cout << "[i] Closing program..." << std::endl;
         audio_socket.is_active.store(false);
         audio_socket.is_recv_running.store(false);
         audio_socket.is_send_running.store(false);
@@ -627,14 +628,14 @@ public:
             audio_socket.recv_thread.join();
         if(audio_socket.send_thread.joinable())
             audio_socket.send_thread.join();
-        std::cout << "[i] Audio channel closed\n";
+        std::cout << "[i] Audio channel closed" << std::endl;
         // -- base --
         base_socket.target_socket->destroy();
         if(base_socket.send_thread.joinable()) 
             base_socket.send_thread.join();
         if(base_socket.recv_thread.joinable()) 
             base_socket.recv_thread.join();
-        std::cout << "[i] Base channel closed\n";
+        std::cout << "[i] Base channel closed" << std::endl;
         // -- video --
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].target_socket->destroy();
@@ -643,7 +644,7 @@ public:
             if(video_sockets[i].recv_thread.joinable()) 
                 video_sockets[i].recv_thread.join();
         }
-        std::cout << "[i] Video channels closed\n[i] Bye\n";
+        std::cout << "[i] Video channels closed\n[i] Bye" << std::endl;
     }
 private:
     static int audioCallback(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags, void* userData) {
@@ -666,7 +667,7 @@ private:
             audio_socket.target_socket->sendPacket(packet);
         }
         else 
-            std::cout << "[w] Empty encoded audio\n";
+            std::cout << "[w] Empty encoded audio" << std::endl;
         return paContinue;
     }
     struct SocketStruct{
@@ -740,7 +741,7 @@ private:
 };
 
 int main(int argc, char** argv){
-    std::cout << "[i] Hi Linux\n";
+    std::cout << "[i] Hi Linux" << std::endl;
     // --- RelayNode handles everything ---
     rclcpp::init(argc, argv);
     auto node = std::make_shared<RelayNode>();
