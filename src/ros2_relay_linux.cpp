@@ -51,7 +51,7 @@
 #define JOINT2_TOPIC "joint_shouler"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
-#define SERVER_IP "192.168.0.131"
+#define SERVER_IP "127.0.0.1"      //"192.168.0.131"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
@@ -114,7 +114,10 @@ void scanPorts(bool full_scan = false){
             cap.release();
         }
     }
-    std::cout << "[i] Found " << cam_ports.size() << " video sources on ports { ";
+    if(cam_ports.empty())
+        std::cout << "[i] No video sources found" << std::endl;
+    else
+        std::cout << "[i] Found " << cam_ports.size() << " video sources on ports { ";
     for(int i = 0; i < cam_ports.size(); i++){
         cam_info.push_back(std::make_pair(cam_ports[i], cam_names[i]));
         std::cout << cam_ports[i] << (i < cam_ports.size()-1 ? ", " : " }\n") << std::flush;
@@ -199,7 +202,7 @@ public:
         delete this;
     }
     
-    template <typename T> void sendPacket(std::vector<T> data){
+    template <typename T> void sendPacket(std::vector<T> data, int marker = 0){
         // --- Initial settings ---
         int max_size = MAX_UDP_PACKET_SIZE - sizeof(RTPHeader);
         int num_fragments = ((data.size()*sizeof(T)) + max_size - 1) / max_size;
@@ -315,6 +318,7 @@ public:
         base_socket.target_socket = new RTPStreamHandler(SERVER_PORT, SERVER_IP, PayloadType::ROS2_ARRAY);
         audio_socket.is_recv_running.store(true);
         audio_socket.is_send_running.store(true);
+        audio_socket.is_active.store(false);
         audio_socket.target_socket = new RTPStreamHandler(SERVER_PORT + 2, SERVER_IP, PayloadType::AUDIO_PCM);
         // -- controller --
         controller_socket.is_recv_running.store(true);
@@ -329,13 +333,6 @@ public:
             socket_struct.target_socket = new RTPStreamHandler(SERVER_PORT + (2*i) + 6, SERVER_IP, PayloadType::VIDEO_MJPEG);
             video_sockets.push_back(std::move(socket_struct));
         }
-        /*
-        for(int i = 0; i < video_sockets.size(); i++){
-            video_sockets[i].is_send_running.store(true);
-            video_sockets[i].is_recv_running.store(true);
-            video_sockets[i].is_active.store(false);
-        }
-        */
 
         // --- Opus + PortAudio startup ---
         int opus_error;
@@ -520,26 +517,24 @@ public:
         // -- video --
         for(int i = 0; i < video_sockets.size(); i++){
             video_sockets[i].send_thread = std::thread([i, this](){
-                cv::VideoCapture cap(cam_info[i].first, cv::CAP_V4L2);
-                //if(i < cam_ports.size()){
-                cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
-                cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
-                cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
-                if(!cap.isOpened()){
+                video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
+                video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+                video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
+                video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
+                if(!video_sockets[i].cap.isOpened()){
                     std::cout << "[e] Could not open webcam on port " << cam_info[i].first << " for video socket " << i << std::endl;
                     return;
                 }
                 std::cout << "[i] Camera on port " << cam_info[i].first << " reserved" << std::endl;
-                //}
                 cv::Mat frame;
                 std::vector<unsigned char> compressed_data;
                 while(video_sockets[i].is_send_running.load()){
                     if(video_sockets[i].is_active.load()){
                         // --- ~35ms from frame capture to send, works as a frame rate limiter (max ~30 fps) ---
-                        cap >> frame;
+                        video_sockets[i].cap >> frame;
                         if(frame.empty()){
                             std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << std::endl;
-                            break;
+                            continue;
                         }
                         cv::imencode(".jpg", frame, compressed_data, {cv::IMWRITE_JPEG_QUALITY, 40});
                         video_sockets[i].target_socket->sendPacket(compressed_data);
@@ -547,13 +542,32 @@ public:
                     else 
                         std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
-                cap.release();
+                video_sockets[i].cap.release();
             });
             video_sockets[i].recv_thread = std::thread([i, this](){
                 while(video_sockets[i].is_recv_running.load()){
                     std::vector<int> data = video_sockets[i].target_socket->recvPacket();
                     if(data.size() <= 1) continue;
-                    video_sockets[i].is_active.store(data[1]);
+                    if(data[0] == 0)
+                        video_sockets[i].is_active.store(data[1]);
+                    else{
+                        std::cout << "res change received" << std::endl;
+                        video_sockets[i].is_active.store(false);
+                        video_sockets[i].cap.release();
+                        video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
+                        video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+                        video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, data[1]);
+                        video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, data[2]);
+                        if(!video_sockets[i].cap.isOpened()){
+                            std::cout << "[e] Could not reopen webcam on port " << cam_info[i].first << " for video socket " << i << ". Resetting..." << std::endl;
+                            video_sockets[i].cap.release();
+                            video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
+                            video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+                            video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
+                            video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
+                        }
+                        video_sockets[i].is_active.store(true);
+                    }
                 }
             });
         }
@@ -690,7 +704,7 @@ private:
     int audioProcess(const void* input, void* output, unsigned long frameCount, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags){
         // --- Callback runs again after paContinue is returned, so no loop required ---
         if(!audio_socket.is_send_running.load()) return paComplete;
-        audio_socket.is_active.store(true);
+        //audio_socket.is_active.store(true);
         if(!input || !audio_socket.is_active.load()) return paContinue;
 
         // --- Opus encode + send ---
@@ -706,6 +720,7 @@ private:
         return paContinue;
     }
     struct SocketStruct{
+        cv::VideoCapture cap;
         RTPStreamHandler* target_socket;
         std::thread send_thread;
         std::thread recv_thread;
