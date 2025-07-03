@@ -51,7 +51,7 @@
 #define JOINT2_TOPIC "joint_shouler"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
-#define SERVER_IP "127.0.0.1"      //"192.168.0.131"
+#define SERVER_IP "192.168.0.131"      //"192.168.0.131"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
@@ -327,11 +327,13 @@ public:
         // -- video --
         for(int i = 0; i < cam_info.size(); i++){
             SocketStruct socket_struct;
-            socket_struct.is_recv_running.store(true);
-            socket_struct.is_send_running.store(true);
-            socket_struct.is_active.store(false);
             socket_struct.target_socket = new RTPStreamHandler(SERVER_PORT + (2*i) + 6, SERVER_IP, PayloadType::VIDEO_MJPEG);
             video_sockets.push_back(std::move(socket_struct));
+        }
+        for(int i = 0; i < video_sockets.size(); i++){
+            video_sockets[i].is_recv_running.store(true);
+            video_sockets[i].is_send_running.store(true);
+            video_sockets[i].is_active.store(false);        
         }
 
         // --- Opus + PortAudio startup ---
@@ -349,6 +351,7 @@ public:
         // --- ros2 publishers ---
         estop_publisher = this->create_publisher<std_msgs::msg::Bool>(ESTOP_TOPIC, 10);
         controller_publisher = this->create_publisher<sensor_msgs::msg::Joy>(CONTROLLER_TOPIC, 10);
+        this->declare_parameter<bool>("launched", false);
 
         // --- Threads startup - Program begins ---
         std::cout << "[i] Initializing threads..." << std::endl;
@@ -484,13 +487,18 @@ public:
                     estop_publisher->publish(estop_msg);
                 }
                 else if(data[1] == -2){
-                    std::cout << "[i] Restart called" << std::endl;
-                    exit_code = 1;
-                    rclcpp::shutdown();
+                    if(this->get_parameter("launched").as_bool()){
+                        std::cout << "[i] Restart called" << std::endl;
+                        exit_code = 1;
+                        rclcpp::shutdown();
+                    }
+                    else
+                        std::cout << "[w] Restart called but node wasn't launched. Skipping..." << std::endl;
                     break;
                 }
                 else if(data[1] != 2) 
                     std::cout << "[w] Invalid base packet received" << std::endl;
+
                 if(data[1] != 2){
                     audio_socket.is_active.store(false);
                     for(int i = 0; i < video_sockets.size(); i++){
@@ -551,8 +559,8 @@ public:
                     if(data[0] == 0)
                         video_sockets[i].is_active.store(data[1]);
                     else{
-                        std::cout << "res change received" << std::endl;
-                        video_sockets[i].is_active.store(false);
+                        std::cout << "[i] Resolution change received for camport: " << cam_info[i].first << " to: " << data[1] << "x" << data[2] << std::endl;
+                        video_sockets[i].is_active.store(false);                        
                         video_sockets[i].cap.release();
                         video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
                         video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
@@ -566,6 +574,7 @@ public:
                             video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
                             video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
                         }
+                        
                         video_sockets[i].is_active.store(true);
                     }
                 }
