@@ -542,6 +542,7 @@ public:
                         video_sockets[i].cap >> frame;
                         if(frame.empty()){
                             std::cout << "[w] Empty frame captured on camport " << cam_ports[i] << std::endl;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(500));
                             continue;
                         }
                         cv::imencode(".jpg", frame, compressed_data, {cv::IMWRITE_JPEG_QUALITY, 40});
