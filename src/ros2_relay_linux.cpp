@@ -30,7 +30,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
-#include "std_msgs/msg/int32_multi_array.hpp"
+#include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "sensor_msgs/msg/joy.hpp"
 #include "sensor_msgs/msg/imu.hpp"
@@ -351,6 +351,7 @@ public:
         // --- ros2 publishers ---
         estop_publisher = this->create_publisher<std_msgs::msg::Bool>(ESTOP_TOPIC, 10);
         controller_publisher = this->create_publisher<sensor_msgs::msg::Joy>(CONTROLLER_TOPIC, 10);
+        settings_publisher = this->create_publisher<std_msgs::msg::Int32>(SETTINGS_TOPIC, 10);
         this->declare_parameter<bool>("launched", false);
 
         // --- Threads startup - Program begins ---
@@ -481,9 +482,9 @@ public:
                 else if(data[1] == 1)
                     std::cout << "[i] GUI disconnected" << std::endl;
                 else if(data[1] == -1){
-                    std::cout << "[i] E-Stop called" << std::endl;
+                    std::cout << "[i] E-Stop called " << ((bool)data[2] ? "on" : "off") << std::endl;
                     std_msgs::msg::Bool estop_msg;
-                    estop_msg.data = true;
+                    estop_msg.data = (bool)data[2];
                     estop_publisher->publish(estop_msg);
                 }
                 else if(data[1] == -2){
@@ -496,7 +497,13 @@ public:
                         std::cout << "[w] Restart called but node wasn't launched. Skipping..." << std::endl;
                     break;
                 }
-                else if(data[1] != 2) 
+                else if(data[1] == 2){
+                    std_msgs::msg::Int32 vel_msg;
+                    vel_msg.data = data[2];
+                    settings_publisher->publish(vel_msg);
+                    std::cout << "recv " << data[2] << std::endl;
+                }
+                else
                     std::cout << "[w] Invalid base packet received" << std::endl;
 
                 if(data[1] != 2){
@@ -516,9 +523,9 @@ public:
                 std::vector<int> data = audio_socket.target_socket->recvPacket();
                 if(data.size() == 0 || data[0] != 0) continue;
                 audio_socket.is_active.store((bool)data[1]);
-                if((bool)data[1])
+                if((bool)data[1] /*&& !audio_socket.is_active.load()*/)
                     Pa_StartStream(stream);
-                else
+                else /*if(audio_socket.is_active.load())*/
                     Pa_StopStream(stream);
             }
         });
@@ -766,7 +773,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sensor_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_publisher;
-    rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr settings_publisher;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr settings_publisher;
     rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr controller_publisher;
     float gas_data = 0;
     float encoder_data = 0;
