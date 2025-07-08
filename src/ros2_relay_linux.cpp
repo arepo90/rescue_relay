@@ -38,7 +38,8 @@
 
 // --- Initial settings ---
 #define M_PI 3.14159265358979323846
-#define CONTROLLER_TOPIC "joy"
+#define CONTROLLER_TOPIC_1 "joy1"
+#define CONTROLLER_TOPIC_2 "joy2"
 #define SETTINGS_TOPIC "settings"
 #define ESTOP_TOPIC "estop"
 #define IMU_TOPIC "imu_data"
@@ -51,7 +52,7 @@
 #define JOINT2_TOPIC "joint_shouler"
 #define JOINT3_TOPIC "joint_elbow"
 #define JOINT4_TOPIC "joint_hand"
-#define SERVER_IP "192.168.0.131"      //"192.168.0.131"
+#define SERVER_IP "192.168.0.218"   //"192.168.0.131"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
@@ -62,7 +63,7 @@
 int exit_code = 0;
 
 std::vector<int> cam_ports = {0};
-std::vector<std::string> cam_names = {"aaaa", "bbbb", "cccc", "dddd", "eeeee"};
+std::vector<std::string> cam_names = {"Remote 1", "Remote 2", "Remote 3", "Remote 4", "Remote 5"};
 int mic_port = -1;
 
 std::vector<std::pair<int, std::string>> cam_info;
@@ -350,7 +351,8 @@ public:
 
         // --- ros2 publishers ---
         estop_publisher = this->create_publisher<std_msgs::msg::Bool>(ESTOP_TOPIC, 10);
-        controller_publisher = this->create_publisher<sensor_msgs::msg::Joy>(CONTROLLER_TOPIC, 10);
+        controller1_publisher = this->create_publisher<sensor_msgs::msg::Joy>(CONTROLLER_TOPIC_1, 10);
+        controller2_publisher = this->create_publisher<sensor_msgs::msg::Joy>(CONTROLLER_TOPIC_2, 10);
         settings_publisher = this->create_publisher<std_msgs::msg::Int32>(SETTINGS_TOPIC, 10);
         this->declare_parameter<bool>("launched", false);
 
@@ -360,22 +362,44 @@ public:
         // -- controller --
         controller_socket.recv_thread = std::thread([this](){
             while(controller_socket.is_recv_running.load()){
-                std::vector<int> data = controller_socket.target_socket->recvPacket();
-                if(data.size() != 20) continue;
+                std::vector<int> data = controller_socket.target_socket->recvPacket(), controller_1, controller_2;
+                if(data.size() == 20)
+                    controller_1 = data;
+                else if(data.size() == 40){
+                    controller_1.assign(data.begin(), data.begin()+20);
+                    controller_2.assign(data.end()-20, data.end());
+                }
+                else continue;
                 std::vector<float> axes;
-                std::vector<int> buttons(data.end()-14, data.end());
+                std::vector<int> buttons(controller_1.end()-14, controller_1.end());
                 for(int i = 0; i < 6; i++){
                     if(i < 4) 
-                        axes.push_back(float(data[i]) / 255.0);
+                        axes.push_back(float(controller_1[i]) / 255.0);
                     else
-                        axes.push_back((float(data[i])/255.0) * 2.0 - 1.0);
+                        axes.push_back((float(controller_1[i])/255.0) * 2.0 - 1.0);
                 }
                 sensor_msgs::msg::Joy msg;
                 msg.header.stamp = this->now();
-                msg.header.frame_id = "joy_frame";
+                msg.header.frame_id = "joy1_frame";
                 msg.axes = axes;
                 msg.buttons = buttons;
-                controller_publisher->publish(msg);
+                controller1_publisher->publish(msg);
+                if(!controller_2.empty()){
+                    axes.clear(); buttons.clear();
+                    buttons = std::vector<int>(controller_2.end()-14, controller_2.end());
+                    for(int i = 0; i < 6; i++){
+                        if(i < 4) 
+                            axes.push_back(float(controller_2[i]) / 255.0);
+                        else
+                            axes.push_back((float(controller_2[i])/255.0) * 2.0 - 1.0);
+                    }
+                    sensor_msgs::msg::Joy msg;
+                    msg.header.stamp = this->now();
+                    msg.header.frame_id = "joy2_frame";
+                    msg.axes = axes;
+                    msg.buttons = buttons;
+                    controller2_publisher->publish(msg);
+                }
             }
         });
 
@@ -774,7 +798,8 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_subscription;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_publisher;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr settings_publisher;
-    rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr controller_publisher;
+    rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr controller1_publisher;
+    rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr controller2_publisher;
     float gas_data = 0;
     float encoder_data = 0;
     float joint1_data = 0;
