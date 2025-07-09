@@ -34,6 +34,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "sensor_msgs/msg/joy.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
 
 // --- Initial settings ---
@@ -48,11 +49,8 @@
 #define TRACK_TOPIC "track_velocity"
 #define THERMAL_TOPIC "thermal_image"
 #define SENSOR_TOPIC "magnetometer"
-#define JOINT1_TOPIC "joint_base"
-#define JOINT2_TOPIC "joint_shouler"
-#define JOINT3_TOPIC "joint_elbow"
-#define JOINT4_TOPIC "joint_hand"
-#define SERVER_IP "192.168.0.218"   //"192.168.0.131"
+#define JOINTS_TOPIC "joint_states"
+#define SERVER_IP "127.0.0.1"   //"192.168.0.131"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
@@ -63,7 +61,6 @@
 int exit_code = 0;
 
 std::vector<int> cam_ports = {0};
-std::vector<std::string> cam_names = {"Remote 1", "Remote 2", "Remote 3", "Remote 4", "Remote 5"};
 int mic_port = -1;
 
 std::vector<std::pair<int, std::string>> cam_info;
@@ -72,18 +69,18 @@ struct BasePacket{
     float body_x = 0;
     float body_y = 0;
     float body_z = 0;
-    float arm_l = 0;
-    float arm_r = 0;
+    float arms = 0;
     float art_1 = 0;
     float art_2 = 0;
     float art_3 = 0;
     float art_4 = 0;
+    float art_5 = 0;
+    float art_6 = 0;
     float track_l = 0;
     float track_r = 0;
     float magnetometer_x = 0;
     float magnetometer_y = 0;
     float magnetometer_z = 0;
-    float gas_ppm = 0;
 };
 
 struct RTPHeader{
@@ -120,7 +117,7 @@ void scanPorts(bool full_scan = false){
     else
         std::cout << "[i] Found " << cam_ports.size() << " video sources on ports { ";
     for(int i = 0; i < cam_ports.size(); i++){
-        cam_info.push_back(std::make_pair(cam_ports[i], cam_names[i]));
+        cam_info.push_back(std::make_pair(cam_ports[i], "Remote " + std::to_string(i+1)));
         std::cout << cam_ports[i] << (i < cam_ports.size()-1 ? ", " : " }\n") << std::flush;
     }
     int max_checks = Pa_GetDeviceCount();
@@ -433,20 +430,8 @@ public:
                     arms = encoder_data;
                 }
                 {
-                    std::lock_guard<std::mutex> lock(joint1_mutex);
-                    joints.push_back(joint1_data);
-                }
-                {
-                    std::lock_guard<std::mutex> lock(joint2_mutex);
-                    joints.push_back(joint2_data);
-                }
-                {
-                    std::lock_guard<std::mutex> lock(joint3_mutex);
-                    joints.push_back(joint3_data);
-                }
-                {
-                    std::lock_guard<std::mutex> lock(joint4_mutex);
-                    joints.push_back(joint4_data);
+                    std::lock_guard<std::mutex> lock(joints_mutex);
+                    joints = joints_data;
                 }
                 {
                     std::lock_guard<std::mutex> lock(thermal_mutex);
@@ -458,8 +443,8 @@ public:
                     orientation = {0, 0, 0};
                 if(tracks.empty())
                     tracks = {0, 0};
-                if(joints.size() != 4)
-                    joints = {0, 0, 0, 0};
+                if(joints.size() != 6)
+                    joints = {0, 0, 0, 0, 0};
                 if(thermal.empty())
                     thermal = std::vector<float>(64, 0);
 
@@ -468,17 +453,17 @@ public:
                     orientation[1],
                     orientation[2],
                     arms,
-                    arms,
                     joints[0],
                     joints[1],
                     joints[2],
                     joints[3],
+                    joints[4],
+                    joints[5],
                     tracks[0],
                     tracks[1],
                     sensor[0],
                     sensor[1],
-                    sensor[2],
-                    gas
+                    sensor[2]
                 };
                 std::vector<char> packet(sizeof(BasePacket)+sizeof(float)), thermal_encoded(64*sizeof(float));
                 float temp = static_cast<float>(cam_info.size());
@@ -613,11 +598,6 @@ public:
             });
         }
         // -- ros2 subscribers --
-        gas_subscription = this->create_subscription<std_msgs::msg::Float32>(GAS_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
-            // --- Mutex locks for thread-safe updates ---
-            std::lock_guard<std::mutex> lock(gas_mutex);
-            gas_data = msg.data;
-        });
         imu_subscription = this->create_subscription<sensor_msgs::msg::Imu>(IMU_TOPIC, 10, [this](const sensor_msgs::msg::Imu::SharedPtr msg){
             std::vector<float> orientation;
             double roll, pitch, yaw;
@@ -667,25 +647,14 @@ public:
             std::lock_guard<std::mutex> lock(sensor_mutex);
             sensor_data = sensor;
         });
-        joint1_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT1_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
+        joints_subscription = this->create_subscription<sensor_msgs::msg::JointState>(JOINTS_TOPIC, 10, [this](const sensor_msgs::msg::JointState msg){
+            std::vector<float> positions(6);
+            for(int i = 0; i < 6; i++){
+                positions[(msg.name[i][5] - '0') - 1] = msg.position[i];
+            }
             // --- Mutex locks for thread-safe updates ---
-            std::lock_guard<std::mutex> lock(joint1_mutex);
-            joint1_data = msg.data;
-        });
-        joint2_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT2_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
-            // --- Mutex locks for thread-safe updates ---
-            std::lock_guard<std::mutex> lock(joint2_mutex);
-            joint2_data = msg.data;
-        });
-        joint3_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT3_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
-            // --- Mutex locks for thread-safe updates ---
-            std::lock_guard<std::mutex> lock(joint3_mutex);
-            joint3_data = msg.data;
-        });
-        joint4_subscription = this->create_subscription<std_msgs::msg::Float32>(JOINT4_TOPIC, 10, [this](const std_msgs::msg::Float32 msg){
-            // --- Mutex locks for thread-safe updates ---
-            std::lock_guard<std::mutex> lock(joint4_mutex);
-            joint4_data = msg.data;
+            std::lock_guard<std::mutex> lock(joints_mutex);
+            joints_data = positions;
         });
         std::cout << "[i] Setup done" << std::endl;
     }
@@ -788,10 +757,7 @@ private:
 
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr gas_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr encoder_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint1_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint2_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint3_subscription;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint4_subscription;
+    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joints_subscription;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_subscription;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
     rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr sensor_subscription;
@@ -802,10 +768,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr controller2_publisher;
     float gas_data = 0;
     float encoder_data = 0;
-    float joint1_data = 0;
-    float joint2_data = 0;
-    float joint3_data = 0;
-    float joint4_data = 0;
+    std::vector<float> joints_data;
     bool estop_data = false;
     std::vector<float> imu_data = {};
     std::vector<float> thermal_data = {};
@@ -821,10 +784,7 @@ private:
     std::mutex encoder_mutex;
     std::mutex sensor_mutex;
     std::mutex gui_mutex;
-    std::mutex joint1_mutex;
-    std::mutex joint2_mutex;
-    std::mutex joint3_mutex;
-    std::mutex joint4_mutex;
+    std::mutex joints_mutex;
     PaStream* stream;
     PaError err;
     OpusEncoder* opus_encoder;
