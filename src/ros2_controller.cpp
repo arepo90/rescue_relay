@@ -38,20 +38,6 @@ public:
             10,
             std::bind(&Controller::joy_callback, this, std::placeholders::_1)
         );
-        this->move_group_action_client_ = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
-            this,
-            "move_group"); // This is the default action server name
-
-        // Wait for the action server to be available
-        if (!this->move_group_action_client_->wait_for_action_server(std::chrono::seconds(10)))
-        {
-            RCLCPP_ERROR(this->get_logger(), "MoveGroup action server not available after waiting.");
-            // Handle error or exit
-        }
-        else
-        {
-            RCLCPP_INFO(this->get_logger(), "Connected to MoveGroup action server.");
-        }
 
         // Initialize TF2 components for getting current pose (explained later)
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -73,53 +59,17 @@ public:
         
         RCLCPP_INFO(this->get_logger(), "Xbox Robot Controller started!");
         RCLCPP_INFO(this->get_logger(), "Controls:");
-        RCLCPP_INFO(this->get_logger(), "  Left stick: Move X/Y");
-        RCLCPP_INFO(this->get_logger(), "  Right stick: Move Z/Rotate Z");
-        RCLCPP_INFO(this->get_logger(), "  D-pad: Fine position control");
-        RCLCPP_INFO(this->get_logger(), "  Shoulder buttons: Rotate X/Y");
-        RCLCPP_INFO(this->get_logger(), "  B button: Reset to initial position");
-        RCLCPP_INFO(this->get_logger(), "  Start button: Quit");
+        RCLCPP_INFO(this->get_logger(), "- Left stick: Move X/Y");
+        RCLCPP_INFO(this->get_logger(), "- Right stick: Move Z/Rotate Z");
+        RCLCPP_INFO(this->get_logger(), "- D-pad: Fine position control");
+        RCLCPP_INFO(this->get_logger(), "- Shoulder buttons: Rotate X/Y");
+        RCLCPP_INFO(this->get_logger(), "- B button: Reset to initial position");
+        RCLCPP_INFO(this->get_logger(), "- Start button: Quit");
     }
 
 private:
-rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SharedPtr move_group_action_client_;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-
-    void goal_response_callback(
-        rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle)
-    {
-        if (!goal_handle)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Goal was rejected by server.");
-        }
-        else
-        {
-            RCLCPP_INFO(this->get_logger(), "Goal accepted by server, waiting for result...");
-        }
-    }
-
-    void result_callback(
-        const rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::WrappedResult& result)
-    {
-        if (result.code == rclcpp_action::ResultCode::SUCCEEDED)
-        {
-            RCLCPP_INFO(this->get_logger(), "Goal succeeded!");
-        }
-        else if (result.code == rclcpp_action::ResultCode::ABORTED)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Goal was aborted by server.");
-        }
-        else if (result.code == rclcpp_action::ResultCode::CANCELED)
-        {
-            RCLCPP_WARN(this->get_logger(), "Goal was canceled by server.");
-        }
-        else
-        {
-            RCLCPP_ERROR(this->get_logger(), "Unknown result code: %d", result.code);
-        }
-        // You can access result->result.error_code to get more detailed MoveIt error codes
-    }
     void update_callback(const visualization_msgs::msg::InteractiveMarkerUpdate::SharedPtr msg){
         std::lock_guard<std::mutex> lock(pose_mutex_);
         for (const auto& pose : msg->poses) {
@@ -376,14 +326,15 @@ rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SharedPtr move_group_acti
     }
     
     void reset_position()
+
     {
-        current_pose_.position.x = -0.10242821276187897;
-        current_pose_.position.y = 0.0048788683488965034;
-        current_pose_.position.z = 0.27170345187187195;
-        current_pose_.orientation.x = 0.5630346536636353;
-        current_pose_.orientation.y = -1.4204900367076334e-07;
+        current_pose_.position.x = -0.0529894295830004;
+        current_pose_.position.y = 0.0008869873338453572;
+        current_pose_.position.z = 0.12138612077447039;
+        current_pose_.orientation.x = 0.6774911583753535;
+        current_pose_.orientation.y = -5.657665869154667e-17;
         current_pose_.orientation.z = 0.8264333009719849;
-        current_pose_.orientation.w = -1.9982182948297122e-06;
+        current_pose_.orientation.w = -2.488563980503918e-06;
         RCLCPP_INFO(this->get_logger(), "Reset to initial position");
     }
     

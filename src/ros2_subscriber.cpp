@@ -1,170 +1,193 @@
-/*
-    Subscriber test program
-    Robotec 2025
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
+#include <opencv2/opencv.hpp>
+#include <cv_bridge/cv_bridge.h> // Still useful for header and encoding type
 
-    Couldn't be bothered to write any of this, so thank deepseek
-*/
-
-#include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float32.hpp"
-#include "std_msgs/msg/float32_multi_array.hpp"
-#include "sensor_msgs/msg/imu.hpp"
-#include "geometry_msgs/msg/vector3.hpp"
-
-#include <iostream>
 #include <vector>
-#include <sstream>
-#include <iomanip>
+#include <string>
+#include <memory>
+#include <chrono>
+#include <functional> // Required for std::bind, though we'll switch to lambda
 
-#define IMU_TOPIC "imu_data"
-#define ENCODER_TOPIC "encoder_position"
-#define GAS_TOPIC "mq2_gas"
-#define TRACK_TOPIC "track_velocity"
-#define THERMAL_TOPIC "thermal_image"
-#define SENSOR_TOPIC "sensor_topic"
-#define JOINT1_TOPIC "joint_base"
-#define JOINT2_TOPIC "joint_shouler"
-#define JOINT3_TOPIC "joint_elbow"
-#define JOINT4_TOPIC "joint_hand"
+// Define a maximum number of cameras to check to prevent infinite loops
+// if a non-existent device index somehow opens without error.
+const int MAX_CAMERAS_TO_CHECK = 10;
 
-// Use placeholders for std::bind (like _1)
-using namespace std::placeholders;
+// Define the default frame rate (in Hz) for publishing images
+const double DEFAULT_FRAME_RATE = 30.0;
 
-class TestSubscriber : public rclcpp::Node {
+class CompressedWebcamPublisher : public rclcpp::Node
+{
 public:
-    TestSubscriber() : Node("test_subscriber") {
-        RCLCPP_INFO(this->get_logger(), "Test Subscriber Node Started. Listening...");
+    CompressedWebcamPublisher()
+    : rclcpp::Node("compressed_webcam_publisher")
+    {
+        RCLCPP_INFO(this->get_logger(), "Starting webcam scanner and publisher...");
 
-        // Create subscriptions for each topic
-        gas_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-            GAS_TOPIC, 10, std::bind(&TestSubscriber::gas_callback, this, _1));
+        // Iterate through possible camera indices to find available webcams
+        for (int i = 0; i < MAX_CAMERAS_TO_CHECK; ++i)
+        {
+            cv::VideoCapture cap(i); // Open the camera by index
 
-        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
-            IMU_TOPIC, 10, std::bind(&TestSubscriber::imu_callback, this, _1));
+            if (!cap.isOpened())
+            {
+                // If the camera cannot be opened, it likely doesn't exist at this index.
+                // We'll continue checking higher indices, but this often means we've
+                // exhausted available cameras.
+                RCLCPP_WARN(this->get_logger(), "Could not open camera at index %d. Skipping.", i);
+                continue;
+            }
 
-        thermal_sub_ = this->create_subscription<std_msgs::msg::Float32MultiArray>(
-            THERMAL_TOPIC, 10, std::bind(&TestSubscriber::thermal_callback, this, _1));
+            // Successfully opened a camera! Store its capture object.
+            RCLCPP_INFO(this->get_logger(), "Found camera at index %d. Setting up publisher.", i);
+            // We store a copy of the VideoCapture object. When the vector is resized,
+            // or elements are moved, the copy constructor will be called.
+            // This is generally safe for cv::VideoCapture as it manages its internal pointer.
+            webcam_captures_.push_back(std::make_pair(i, std::move(cap))); // Use std::move for efficiency
 
-        track_sub_ = this->create_subscription<geometry_msgs::msg::Vector3>(
-            TRACK_TOPIC, 10, std::bind(&TestSubscriber::track_callback, this, _1));
+            // Create a publisher for this camera's compressed image feed
+            // The topic name will be unique for each camera, e.g., /camera0/compressed, /camera1/compressed
+            std::string topic_name = "camera" + std::to_string(i) + "/compressed";
+            auto publisher = this->create_publisher<sensor_msgs::msg::CompressedImage>(topic_name, 10);
+            webcam_publishers_.push_back(publisher);
 
-        encoder_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-            ENCODER_TOPIC, 10, std::bind(&TestSubscriber::encoder_callback, this, _1));
+            // Create a timer for this camera to publish frames at a specified rate
+            // The timer period is calculated from the desired frame rate.
+            auto timer_period = std::chrono::milliseconds(static_cast<int>(1000.0 / DEFAULT_FRAME_RATE));
 
-        sensor_sub_ = this->create_subscription<std_msgs::msg::Float32MultiArray>(
-            SENSOR_TOPIC, 10, std::bind(&TestSubscriber::sensor_callback, this, _1));
+            // Use a lambda function for the timer callback.
+            // This is generally more robust and readable than std::bind for member functions
+            // with arguments, especially when dealing with ROS2's timer API.
+            auto timer = this->create_wall_timer(
+                timer_period,
+                [this, i]() { // Capture 'this' pointer and the current camera index 'i' by value
+                    this->publish_webcam_frame(i);
+                }
+            );
+            webcam_timers_.push_back(timer);
 
-        joint1_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-            JOINT1_TOPIC, 10, std::bind(&TestSubscriber::joint1_callback, this, _1));
+            // Set some default properties for the camera if needed (e.g., resolution)
+            // Note: Not all cameras support all resolutions.
+            // cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+            // cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+        }
 
-        joint2_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-            JOINT2_TOPIC, 10, std::bind(&TestSubscriber::joint2_callback, this, _1));
+        if (webcam_captures_.empty())
+        {
+            RCLCPP_ERROR(this->get_logger(), "No webcams found! Exiting.");
+            // Consider shutting down the node if no cameras are found
+            // rclcpp::shutdown(); // Uncomment if you want the node to exit immediately
+        }
+    }
 
-        joint3_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-            JOINT3_TOPIC, 10, std::bind(&TestSubscriber::joint3_callback, this, _1));
-
-        joint4_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-            JOINT4_TOPIC, 10, std::bind(&TestSubscriber::joint4_callback, this, _1));
+    ~CompressedWebcamPublisher()
+    {
+        RCLCPP_INFO(this->get_logger(), "Shutting down webcam publisher.");
+        // Release all capture devices when the node is destroyed
+        for (auto& pair : webcam_captures_)
+        {
+            if (pair.second.isOpened())
+            {
+                pair.second.release();
+            }
+        }
     }
 
 private:
-    // --- Callback functions ---
-    void gas_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f", GAS_TOPIC, msg->data);
-    }
+    // Vector to store pairs of camera index and its cv::VideoCapture object
+    std::vector<std::pair<int, cv::VideoCapture>> webcam_captures_;
+    // Vector to store publishers for each webcam
+    std::vector<rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr> webcam_publishers_;
+    // Vector to store timers for each webcam
+    std::vector<rclcpp::TimerBase::SharedPtr> webcam_timers_;
 
-    void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: Orientation(x=%.3f, y=%.3f, z=%.3f, w=%.3f)",
-                    IMU_TOPIC,
-                    msg->orientation.x,
-                    msg->orientation.y,
-                    msg->orientation.z,
-                    msg->orientation.w);
-        // Optionally print other IMU fields if needed (they are 0 in the publisher)
-        // RCLCPP_INFO(this->get_logger(), "  AngVel(x=%.3f, y=%.3f, z=%.3f), LinAcc(x=%.3f, y=%.3f, z=%.3f)",
-        //             msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z,
-        //             msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-    }
+    /**
+     * @brief Publishes a compressed frame from the specified webcam.
+     * This function is called by the timer associated with each webcam.
+     * @param camera_index The index of the camera to capture from.
+     */
+    void publish_webcam_frame(int camera_index)
+    {
+        // Find the capture object for the given camera_index
+        cv::VideoCapture* cap = nullptr;
+        rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr publisher = nullptr;
 
-    void thermal_callback(const std_msgs::msg::Float32MultiArray::SharedPtr msg) const {
-        std::stringstream ss;
-        ss << std::fixed << std::setprecision(2); // Format floats nicely
-        ss << "[";
-        bool first = true;
-        for (const auto& val : msg->data) {
-            if (!first) {
-                ss << ", ";
+        // Use a range-based for loop for cleaner iteration
+        for (auto& pair : webcam_captures_)
+        {
+            if (pair.first == camera_index)
+            {
+                cap = &pair.second;
+                // Find the corresponding publisher by index.
+                // This assumes webcam_captures_ and webcam_publishers_ maintain the same order of cameras.
+                // A more robust approach would be to store the publisher directly with the capture object,
+                // or use a map from camera index to publisher.
+                size_t pub_idx = 0;
+                for (size_t k = 0; k < webcam_captures_.size(); ++k) {
+                    if (webcam_captures_[k].first == camera_index) {
+                        publisher = webcam_publishers_[k];
+                        break;
+                    }
+                }
+                break;
             }
-            ss << val;
-            first = false;
         }
-        ss << "]";
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %zu elements %s",
-                    THERMAL_TOPIC, msg->data.size(), ss.str().c_str());
-    }
 
-    void track_callback(const geometry_msgs::msg::Vector3::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: x=%.2f, y=%.2f, z=%.2f",
-                    TRACK_TOPIC, msg->x, msg->y, msg->z);
-    }
 
-    void encoder_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", ENCODER_TOPIC, msg->data);
-    }
-
-    void sensor_callback(const std_msgs::msg::Float32MultiArray::SharedPtr msg) const {
-         std::stringstream ss;
-        ss << std::fixed << std::setprecision(3); // Format floats nicely
-        ss << "[";
-        bool first = true;
-        for (const auto& val : msg->data) {
-            if (!first) {
-                ss << ", ";
-            }
-            ss << val;
-            first = false;
+        if (cap == nullptr || publisher == nullptr)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Error: Could not find capture object or publisher for camera index %d. This should not happen.", camera_index);
+            return;
         }
-        ss << "]";
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %zu elements %s",
-                    SENSOR_TOPIC, msg->data.size(), ss.str().c_str());
+
+        cv::Mat frame;
+        *cap >> frame; // Capture a new frame from the camera
+
+        if (frame.empty())
+        {
+            RCLCPP_WARN(this->get_logger(), "Failed to capture frame from camera %d. Is it still connected or busy?", camera_index);
+            return;
+        }
+
+        // Convert OpenCV Mat to ROS2 CompressedImage message
+        try
+        {
+            std_msgs::msg::Header header;
+            header.stamp = this->now(); // Set the timestamp to the current ROS time
+            header.frame_id = "camera" + std::to_string(camera_index); // Set the frame ID
+
+            // Encode the OpenCV Mat to JPEG format
+            std::vector<uchar> buffer;
+            // The compression quality can be adjusted here (0-100, 95 is default for JPEG)
+            std::vector<int> compression_params;
+            compression_params.push_back(cv::IMWRITE_JPEG_QUALITY);
+            compression_params.push_back(90); // Set JPEG quality to 90
+
+            cv::imencode(".jpeg", frame, buffer, compression_params);
+
+            // Create a new CompressedImage message
+            auto compressed_msg = std::make_unique<sensor_msgs::msg::CompressedImage>();
+            compressed_msg->header = header;
+            compressed_msg->format = "jpeg"; // Specify the format
+            compressed_msg->data = buffer; // Assign the compressed data
+
+            publisher->publish(*compressed_msg);
+        }
+        catch (const cv::Exception& e)
+        {
+            RCLCPP_ERROR(this->get_logger(), "OpenCV exception during image encoding for camera %d: %s", camera_index, e.what());
+        }
+        catch (const std::exception& e)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Standard exception during image conversion for camera %d: %s", camera_index, e.what());
+        }
     }
-
-    void joint1_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT1_TOPIC, msg->data);
-    }
-
-    void joint2_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT2_TOPIC, msg->data);
-    }
-
-    void joint3_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT3_TOPIC, msg->data);
-    }
-
-    void joint4_callback(const std_msgs::msg::Float32::SharedPtr msg) const {
-        RCLCPP_INFO(this->get_logger(), "Received [%s]: %.2f degrees", JOINT4_TOPIC, msg->data);
-    }
-
-
-    // --- Subscription Member Variables ---
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr gas_sub_;
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr thermal_sub_;
-    rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr track_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr encoder_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sensor_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint1_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint2_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint3_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr joint4_sub_;
 };
 
-int main(int argc, char* argv[]) {
-    std::cout << "Starting Test Subscriber Node...\n";
+int main(int argc, char * argv[])
+{
     rclcpp::init(argc, argv);
-    // Create the node and spin it to keep it alive and processing callbacks
-    rclcpp::spin(std::make_shared<TestSubscriber>());
+    rclcpp::spin(std::make_shared<CompressedWebcamPublisher>());
     rclcpp::shutdown();
-    std::cout << "Test Subscriber Node Shutdown.\n";
     return 0;
 }

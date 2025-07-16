@@ -405,6 +405,9 @@ public:
             //std_msgs::msg::Int32MultiArray settings_msg;
             //settings_msg.data = {};
             while(base_socket.is_send_running.load()){
+                std_msgs::msg::Bool estop_msg;
+                estop_msg.data = estop_data.load();
+                estop_publisher->publish(estop_msg);
                 //settings_publisher->publish(settings_msg);
                 std::vector<float> orientation, tracks, sensor, joints, thermal;
                 float gas, arms;
@@ -479,7 +482,7 @@ public:
                 std::memcpy(thermal_encoded.data(), thermal.data(), 64*sizeof(float));
                 packet.insert(packet.end(), thermal_encoded.begin(), thermal_encoded.end());
                 base_socket.target_socket->sendPacket(packet);
-                std::this_thread::sleep_for(std::chrono::milliseconds(33));
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         });
         base_socket.recv_thread = std::thread([this](){
@@ -492,9 +495,10 @@ public:
                     std::cout << "[i] GUI disconnected" << std::endl;
                 else if(data[1] == -1){
                     std::cout << "[i] E-Stop called " << ((bool)data[2] ? "on" : "off") << std::endl;
-                    std_msgs::msg::Bool estop_msg;
-                    estop_msg.data = (bool)data[2];
-                    estop_publisher->publish(estop_msg);
+                    estop_data.store(data[2]);
+                    //std_msgs::msg::Bool estop_msg;
+                    //estop_msg.data = (bool)data[2];
+                    //estop_publisher->publish(estop_msg);
                 }
                 else if(data[1] == -2){
                     if(this->get_parameter("launched").as_bool()){
@@ -570,26 +574,42 @@ public:
                 video_sockets[i].cap.release();
             });
             video_sockets[i].recv_thread = std::thread([i, this](){
+                std::pair<int, int> resolution{VIDEO_WIDTH, VIDEO_HEIGHT};
                 while(video_sockets[i].is_recv_running.load()){
                     std::vector<int> data = video_sockets[i].target_socket->recvPacket();
                     if(data.size() <= 1) continue;
                     if(data[0] == 0)
                         video_sockets[i].is_active.store(data[1]);
-                    else{
+                    else if(resolution.first != data[1] || resolution.second != data[2]){
                         std::cout << "[i] Resolution change received for camport: " << cam_info[i].first << " to: " << data[1] << "x" << data[2] << std::endl;
-                        video_sockets[i].is_active.store(false);                        
-                        video_sockets[i].cap.release();
-                        video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
-                        video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
-                        video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, data[1]);
-                        video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, data[2]);
-                        if(!video_sockets[i].cap.isOpened()){
-                            std::cout << "[e] Could not reopen webcam on port " << cam_info[i].first << " for video socket " << i << ". Resetting..." << std::endl;
+                        video_sockets[i].is_active.store(false);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));                     
+                        try{
+                            video_sockets[i].cap.release();
+                            video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
+                            video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+                            video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, data[1]);
+                            video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, data[2]);
+                            if(!video_sockets[i].cap.isOpened()){
+                                std::cout << "[e] Could not reopen webcam on port " << cam_info[i].first << " for video socket " << i << ". Resetting..." << std::endl;
+                                video_sockets[i].cap.release();
+                                video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
+                                video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+                                video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
+                                video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
+                                resolution = { VIDEO_WIDTH, VIDEO_HEIGHT };
+                            }
+                            else
+                                resolution = { data[1], data[2] };
+                        }
+                        catch(cv::Exception error){
+                            std::cout << "[e] Exception caught: " << error.what() << std::endl;
                             video_sockets[i].cap.release();
                             video_sockets[i].cap = cv::VideoCapture(cam_info[i].first, cv::CAP_V4L2);
                             video_sockets[i].cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
                             video_sockets[i].cap.set(cv::CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
                             video_sockets[i].cap.set(cv::CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
+                            resolution = { VIDEO_WIDTH, VIDEO_HEIGHT };
                         }
                         
                         video_sockets[i].is_active.store(true);
@@ -769,7 +789,7 @@ private:
     float gas_data = 0;
     float encoder_data = 0;
     std::vector<float> joints_data;
-    bool estop_data = false;
+    std::atomic<bool> estop_data{false};
     std::vector<float> imu_data = {};
     std::vector<float> thermal_data = {};
     std::vector<float> track_data = {};
