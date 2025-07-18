@@ -4,7 +4,7 @@
 
     ** may or may not work/be stable **
 */
-
+//asasjsdsdijdsdhuhuhterrrst
 #include <portaudio.h>
 #include <iostream>
 #include <string>
@@ -50,7 +50,7 @@
 #define THERMAL_TOPIC "thermal_image"
 #define SENSOR_TOPIC "magnetometer"
 #define JOINTS_TOPIC "joint_states"
-#define SERVER_IP "127.0.0.1"   //"192.168.0.131"
+#define SERVER_IP "192.168.0.34"   //"192.168.0.131"
 #define SERVER_PORT 8000
 #define AUDIO_SAMPLE_RATE 16000     // 16 kHz
 #define AUDIO_FRAME_SIZE 960        // 960 bytes
@@ -60,7 +60,7 @@
 #define FRAGMENTATION_FLAG 0x8000   // RTP header flag
 int exit_code = 0;
 
-std::vector<int> cam_ports = {0};
+std::vector<int> cam_ports = {};
 int mic_port = -1;
 
 std::vector<std::pair<int, std::string>> cam_info;
@@ -102,7 +102,9 @@ enum class PayloadType : uint8_t {
 };
 
 void scanPorts(bool full_scan = false){
-    std::cout << "[i] Checking video sources..." << std::endl;
+    full_scan = true;
+std::cout << "=======================" << std::endl;    
+std::cout << "[i] Checking video sources bruh..." << std::endl;
     if(full_scan){
         cam_ports.clear();
         for(int i = 0; i < 5; i++){
@@ -127,7 +129,8 @@ void scanPorts(bool full_scan = false){
         mic_info = Pa_GetDeviceInfo(i);
         if(mic_info->maxInputChannels > 0){
             std::cout << "[i] Found microphone on port " << i << ", name: " << mic_info->name << std::endl;
-            if(std::string(mic_info->name) == "default"){
+            std::string str = std::string(mic_info->name);
+	    if(str.find("C270") != std::string::npos){
                 mic_port = i;
                 break;
             }
@@ -290,7 +293,9 @@ public:
     RelayNode() : Node("relay_node"){
         // --- Full startup ---
         // -- portaudio --
-        int stderr_backup = -1;
+std::cout << "======TESTING==========" << std::endl;        
+
+int stderr_backup = -1;
         int dev_null = -1;
         fflush(stderr);
         stderr_backup = dup(STDERR_FILENO);
@@ -308,7 +313,7 @@ public:
             close(stderr_backup);
         }
         std::cout << "[i] Scanning device ports..." << std::endl;
-        scanPorts(true);
+        scanPorts(false);
         std::cout << "[i] Starting stream handlers..." << std::endl;
         // -- base + audio --
         base_socket.is_recv_running.store(true);
@@ -377,7 +382,7 @@ public:
                 }
                 sensor_msgs::msg::Joy msg;
                 msg.header.stamp = this->now();
-                msg.header.frame_id = "joy1_frame";
+                msg.header.frame_id = "joy2_frame";
                 msg.axes = axes;
                 msg.buttons = buttons;
                 controller1_publisher->publish(msg);
